@@ -1,0 +1,494 @@
+/* Stock Trading Tracker -- one stylesheet, no framework.
+   Palette is defined once on :root and redefined for dark; nothing below the
+   token block hard-codes a colour. */
+
+:root {
+  color-scheme: light dark;
+
+  --bg:        #f5f6f8;
+  --surface:   #ffffff;
+  --surface-2: #f0f2f5;
+  --line:      #dde1e7;
+  --line-soft: #e008;
+
+  --ink:       #171a1f;
+  --ink-2:     #5a626e;
+  --ink-3:     #878f9b;
+
+  --accent:    #2b6cb0;
+  --accent-ink:#ffffff;
+
+  --up:        #0f7b52;
+  --up-bg:     #e3f4ec;
+  --down:      #b4292b;
+  --down-bg:   #fbe9e9;
+  --flat:      #6b7280;
+
+  --warn:      #a35b00;
+  --warn-bg:   #fdf1e0;
+
+  /* Categorical series slots for the comparison chart. Validated with the
+     dataviz palette validator against this app's own surfaces (#ffffff light,
+     #1c1f25 dark): lightness band, chroma floor, CVD separation and
+     normal-vision separation all pass in both modes. Assign in fixed order and
+     never cycle -- the hotlist caps at 7, which is exactly the slots here.
+     In light mode aqua, yellow and magenta fall below 3:1 on white, so the
+     chart ships a table view underneath; that is the required relief, not a
+     nicety. */
+  --series-1: #2a78d6;   /* blue    */
+  --series-2: #eb6834;   /* orange  */
+  --series-3: #1baf7a;   /* aqua    */
+  --series-4: #eda100;   /* yellow  */
+  --series-5: #e87ba4;   /* magenta */
+  --series-6: #008300;   /* green   */
+  --series-7: #4a3aa7;   /* violet  */
+  --series-8: #e34948;   /* red     */
+
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:        #14161a;
+    --surface:   #1c1f25;
+    --surface-2: #23272e;
+    --line:      #2f343c;
+
+    --ink:       #e8eaee;
+    --ink-2:     #a7aeb9;
+    --ink-3:     #767d88;
+
+    --accent:    #6aa6e8;
+    --accent-ink:#0d1117;
+
+    --up:        #4bbf8a;
+    --up-bg:     #16301f;
+    --down:      #f0706f;
+    --down-bg:   #351a1c;
+    --flat:      #8b93a0;
+
+    --warn:      #e0a458;
+    --warn-bg:   #33260f;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.4);
+
+    /* The same eight hues re-stepped for the dark surface, not an automatic
+       flip. Validated as a set against #1c1f25 -- all seven clear 3:1 there,
+       so dark mode needs no contrast relief. */
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+
+    --grid: #2c2c2a;
+    --axis: #383835;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -.01em; }
+h1 { font-size: 15px; }
+h2 { font-size: 15px; }
+h3 { font-size: 13px; }
+code { font-family: var(--mono); font-size: .92em; background: var(--surface-2);
+       padding: 1px 4px; border-radius: 4px; }
+
+/* ------------------------------------------------------------- top bar */
+
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 20px;
+  padding: 10px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 9px; }
+.mark {
+  width: 16px; height: 16px; border-radius: 4px;
+  background: linear-gradient(135deg, var(--accent), var(--up));
+}
+.tabs { display: flex; gap: 2px; margin-left: 8px; }
+.tabs button {
+  border: 0; background: none; color: var(--ink-2);
+  padding: 6px 12px; border-radius: 7px; cursor: pointer;
+  font: inherit; font-weight: 500;
+}
+.tabs button:hover { background: var(--surface-2); color: var(--ink); }
+.tabs button.active { background: var(--surface-2); color: var(--ink); }
+#refresh { margin-left: auto; }
+
+/* -------------------------------------------------------------- layout */
+
+.tab { display: none; padding: 20px; max-width: 1280px; margin: 0 auto; }
+.tab.active { display: block; }
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px;
+  margin-bottom: 18px;
+}
+.panel-head { margin-bottom: 14px; }
+.sub { margin: 4px 0 0; color: var(--ink-2); font-size: 12.5px; max-width: 76ch; }
+
+.actions { display: flex; align-items: center; gap: 16px; margin-top: 14px;
+           flex-wrap: wrap; }
+.check { display: flex; align-items: center; gap: 6px; color: var(--ink-2);
+         font-size: 12.5px; cursor: pointer; }
+
+/* ------------------------------------------------------------- controls */
+
+button {
+  font: inherit; cursor: pointer; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--surface);
+  color: var(--ink); padding: 7px 13px; font-weight: 500;
+}
+button:hover:not(:disabled) { background: var(--surface-2); }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-ink);
+                 border-color: transparent; }
+/* `button:hover:not(:disabled)` scores 0,2,1 and would otherwise beat
+   `button.primary` at 0,1,1 -- repainting a primary button in the neutral
+   surface colour while leaving its white text, i.e. invisible on hover. This
+   rule scores 0,3,1 and restores the accent. */
+button.primary:hover:not(:disabled) {
+  background: var(--accent); color: var(--accent-ink); filter: brightness(1.08);
+}
+button.ghost { background: none; color: var(--ink-2); }
+button.tiny { padding: 3px 8px; font-size: 12px; }
+button.danger:hover:not(:disabled) { color: var(--down); border-color: var(--down); }
+
+input[type=text], input[type=number], input[type=date] {
+  font: inherit; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 7px; padding: 7px 9px; width: 100%;
+}
+input:focus-visible, button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+label.field { display: block; }
+label.field > span { display: block; font-size: 11.5px; color: var(--ink-2);
+                     margin-bottom: 3px; }
+
+/* -------------------------------------------------------------- hotlist */
+
+.slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(186px, 1fr));
+         gap: 10px; }
+/* Seven slots auto-fit to six-plus-one on a wide screen, which reads as a
+   mistake. Capping the row at four gives a deliberate 4 + 3. */
+@media (min-width: 900px) { .slots { grid-template-columns: repeat(4, 1fr); } }
+/* Eight slots fall into a clean 4 + 4. */
+.slot { border: 1px solid var(--line); border-radius: var(--radius);
+        padding: 12px; background: var(--surface-2); }
+.slot .row { display: flex; gap: 6px; }
+.slot .row input { text-transform: uppercase; font-family: var(--mono);
+                   font-weight: 600; }
+/* The uppercase transform is for the ticker being typed, not for the hint --
+   without this the placeholder reads "E.G. AAPL". */
+.slot .row input::placeholder { text-transform: none; font-weight: 400; }
+.slot .meta { margin-top: 8px; font-size: 12px; color: var(--ink-2);
+              min-height: 32px; }
+.slot .meta strong { color: var(--ink); font-weight: 600; display: block; }
+/* A slot whose box no longer matches what is stored. The border makes the
+   divergence visible before the analysis runs rather than after it. */
+.slot.dirty { border-color: var(--warn); background: var(--warn-bg); }
+.slot.dirty .row input { border-color: var(--warn); }
+.pending { color: var(--warn); font-size: 12px; font-style: italic; }
+.slot-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+              color: var(--ink-3); margin-bottom: 7px; }
+
+/* ------------------------------------------------------------- verdict */
+
+.verdict-bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 14px 16px; border-radius: var(--radius);
+  background: var(--surface-2); border: 1px solid var(--line);
+  margin-bottom: 16px;
+}
+.verdict-bar .pick { font-size: 22px; font-weight: 650; font-family: var(--mono); }
+.verdict-bar .why { color: var(--ink-2); font-size: 12.5px; flex: 1 1 260px; }
+.pill { display: inline-block; padding: 2px 9px; border-radius: 999px;
+        font-size: 11.5px; font-weight: 600; border: 1px solid transparent; }
+.pill.clear { background: var(--up-bg); color: var(--up); }
+.pill.slight { background: var(--warn-bg); color: var(--warn); }
+.pill.tie   { background: var(--surface); color: var(--ink-2); border-color: var(--line); }
+
+/* --------------------------------------------------------------- cards */
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(305px, 1fr));
+         gap: 14px; }
+
+/* Says out loud that the cards are in rank order. With three candidates that
+   was obvious; with seven wrapping onto two rows it needs stating. */
+.rank-note { margin: 16px 0 10px; font-size: 12.5px; color: var(--ink-2); }
+.rank-note strong { color: var(--ink); }
+.card { border: 1px solid var(--line); border-radius: var(--radius);
+        background: var(--surface); overflow: hidden; }
+.card.winner { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.card-head { display: flex; align-items: baseline; gap: 8px; padding: 12px 14px;
+             border-bottom: 1px solid var(--line); }
+.card-head .tick { font-family: var(--mono); font-weight: 650; font-size: 16px; }
+.card-head .rank { font-size: 11px; color: var(--ink-2); font-weight: 700;
+                   text-transform: uppercase; letter-spacing: .05em;
+                   background: var(--surface-2); border-radius: 5px;
+                   padding: 1px 6px; }
+.card.winner .card-head .rank { background: var(--accent); color: var(--accent-ink); }
+.card-head .price { margin-left: auto; font-family: var(--mono); font-weight: 600; }
+/* The scored close and the live price, side by side. The card's whole case --
+   score, components, entry, stop, target -- is built from the close, so the
+   live price is context rather than the headline. */
+.livebar {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding: 7px 14px; font-size: 11.5px;
+  background: var(--surface-2); border-bottom: 1px solid var(--line);
+}
+.livebar .mono { font-size: 12px; }
+
+.card-body { padding: 14px; }
+.card .name { font-size: 12px; color: var(--ink-2); margin: -6px 0 12px; }
+
+.score-row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.score-num { font-size: 30px; font-weight: 650; font-family: var(--mono);
+             line-height: 1; }
+.score-max { color: var(--ink-3); font-size: 13px; }
+.score-verdict { margin-left: auto; font-weight: 600; font-size: 13px; }
+.meter { height: 7px; border-radius: 4px; background: var(--surface-2);
+         overflow: hidden; margin: 8px 0 4px; position: relative; }
+.meter > i { display: block; height: 100%; border-radius: 4px; }
+.meter-scale { display: flex; justify-content: space-between; font-size: 10.5px;
+               color: var(--ink-3); font-family: var(--mono); }
+
+/* diverging component bars */
+.components { margin: 16px 0 0; display: grid; gap: 7px; }
+.comp { display: grid; grid-template-columns: 74px 1fr 46px; align-items: center;
+        gap: 9px; font-size: 12px; }
+.comp .cname { color: var(--ink-2); text-transform: capitalize; }
+.comp .cval { font-family: var(--mono); text-align: right;
+              font-variant-numeric: tabular-nums; }
+.bipolar { position: relative; height: 14px; background: var(--surface-2);
+           border-radius: 3px; }
+.bipolar::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0;
+                   width: 1px; background: var(--line); }
+.bipolar > i { position: absolute; top: 2px; bottom: 2px; border-radius: 2px; }
+
+/* --------------------------------------------------------------- chart */
+
+.chart { margin: 14px 0 4px; }
+.chart svg { display: block; width: 100%; height: auto; }
+.legend { display: flex; gap: 12px; font-size: 11px; color: var(--ink-2);
+          margin-top: 4px; }
+.legend i { display: inline-block; width: 14px; height: 2px; vertical-align: middle;
+            margin-right: 4px; }
+
+/* ---------------------------------------------------------------- plan */
+
+.plan { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+        background: var(--line); border: 1px solid var(--line);
+        border-radius: 8px; overflow: hidden; margin-top: 14px; }
+.plan div { background: var(--surface); padding: 8px 10px; }
+.plan dt { font-size: 10.5px; color: var(--ink-3); text-transform: uppercase;
+           letter-spacing: .05em; }
+.plan dd { margin: 2px 0 0; font-family: var(--mono); font-weight: 600;
+           font-variant-numeric: tabular-nums; }
+
+/* ------------------------------------------------------------- details */
+
+details.signals { margin-top: 14px; }
+details.signals > summary { cursor: pointer; font-size: 12.5px; color: var(--accent);
+                            font-weight: 500; list-style: none; }
+details.signals > summary::-webkit-details-marker { display: none; }
+details.signals > summary::before { content: "▸ "; }
+details.signals[open] > summary::before { content: "▾ "; }
+
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--line);
+         vertical-align: top; }
+th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+     color: var(--ink-3); font-weight: 600; }
+td.num, th.num { text-align: right; font-family: var(--mono);
+                 font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--surface-2); }
+.sig-note { color: var(--ink-2); font-size: 11.5px; }
+.comp-tag { font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+            color: var(--ink-3); }
+
+.table-wrap { overflow-x: auto; }
+
+/* ---------------------------------------------------------- numbers */
+
+.up { color: var(--up); }
+.down { color: var(--down); }
+.flat { color: var(--flat); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+.badge { display: inline-block; padding: 1px 7px; border-radius: 5px;
+         font-size: 11px; font-weight: 600; }
+.badge.best { background: var(--up-bg); color: var(--up); }
+.badge.mid  { background: var(--warn-bg); color: var(--warn); }
+.badge.worst{ background: var(--down-bg); color: var(--down); }
+
+/* ------------------------------------------------------------- trades */
+
+.trade { border: 1px solid var(--line); border-radius: var(--radius);
+         margin-bottom: 12px; overflow: hidden; }
+.trade-head { display: flex; align-items: center; gap: 12px; padding: 11px 14px;
+              background: var(--surface-2); flex-wrap: wrap; }
+.trade-head .tick { font-family: var(--mono); font-weight: 650; font-size: 15px; }
+.trade-head .spacer { flex: 1; }
+.trade-body { padding: 14px; }
+.close-form, .sell-form {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px; align-items: end; margin-top: 12px;
+  padding-top: 12px; border-top: 1px solid var(--line); }
+.sell-form input[type=number] { text-align: right; font-family: var(--mono); }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+         gap: 1px; background: var(--line); border: 1px solid var(--line);
+         border-radius: 8px; overflow: hidden; }
+.stat { background: var(--surface); padding: 12px 14px; }
+.stat .k { font-size: 11px; color: var(--ink-3); text-transform: uppercase;
+           letter-spacing: .05em; }
+.stat .v { font-size: 22px; font-weight: 650; font-family: var(--mono);
+           font-variant-numeric: tabular-nums; margin-top: 3px; line-height: 1.1; }
+.stat .n { font-size: 11.5px; color: var(--ink-2); margin-top: 3px; }
+
+.callout { padding: 11px 13px; border-radius: 8px; font-size: 12.5px;
+           border: 1px solid var(--line); background: var(--surface-2);
+           margin-top: 12px; }
+.callout.good { background: var(--up-bg); border-color: transparent; color: var(--up); }
+.callout.bad { background: var(--down-bg); border-color: transparent; color: var(--down); }
+.callout.warn { background: var(--warn-bg); border-color: transparent; color: var(--warn); }
+
+.empty { color: var(--ink-3); font-size: 13px; padding: 22px; text-align: center; }
+.err { color: var(--down); font-size: 12.5px; }
+
+/* --------------------------------------------------------------- toast */
+
+.toast {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: var(--ink); color: var(--bg); padding: 10px 16px;
+  border-radius: 8px; font-size: 13px; z-index: 100; max-width: 70ch;
+  box-shadow: 0 4px 14px rgba(0,0,0,.25);
+}
+.toast.bad { background: var(--down); color: #fff; }
+
+.spin { display: inline-block; width: 12px; height: 12px; margin-right: 7px;
+        border: 2px solid currentColor; border-right-color: transparent;
+        border-radius: 50%; animation: spin .7s linear infinite;
+        vertical-align: -1px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 620px) {
+  .topbar { flex-wrap: wrap; gap: 10px; }
+  .plan { grid-template-columns: repeat(2, 1fr); }
+  .tab { padding: 14px; }
+}
+
+/* --------------------------------------------------------- buy dialog */
+
+dialog {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); color: var(--ink);
+  padding: 20px; width: min(560px, calc(100vw - 32px));
+  box-shadow: 0 12px 40px rgba(0,0,0,.24);
+}
+dialog::backdrop { background: rgba(10,14,20,.5); }
+dialog h2 { margin-bottom: 4px; }
+
+/* Five columns that the header and every row share, so the labels stay over
+   the fields they name at any width. */
+.lot-grid { margin-top: 14px; }
+.lot-head, .lot-row {
+  display: grid; grid-template-columns: 1.5fr 1fr 1.2fr .8fr 28px;
+  gap: 6px; align-items: center;
+}
+.lot-head { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+            color: var(--ink-3); margin-bottom: 5px; }
+.lot-head .num { text-align: right; }
+.lot-row { margin-bottom: 6px; }
+.lot-row input[data-k=qty], .lot-row input[data-k=price],
+.lot-row input[data-k=fee] { text-align: right; font-family: var(--mono); }
+.lot-row input { padding: 6px 8px; }
+
+.buy-total { margin-top: 10px; padding: 9px 11px; border-radius: 8px;
+             background: var(--surface-2); font-size: 12.5px;
+             font-variant-numeric: tabular-nums; }
+
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px;
+                  margin-top: 16px; }
+
+tfoot td { border-top: 1px solid var(--line); border-bottom: 0;
+           background: var(--surface-2); }
+
+@media (max-width: 520px) {
+  .lot-head { display: none; }
+  .lot-row { grid-template-columns: 1fr 1fr; }
+}
+
+/* Which price a P&L figure is marked to. Deliberately quiet, but always
+   present -- the number means something different at 09:00 than at 23:00, and
+   without this it silently meant "yesterday's close" all day. */
+.mark-note {
+  font-size: 11px; color: var(--ink-3); font-family: var(--mono);
+  border: 1px solid var(--line); border-radius: 5px;
+  padding: 1px 6px; margin-left: 4px; white-space: nowrap;
+}
+
+/* ------------------------------------------- two-week comparison chart */
+
+.compare .chartwrap { position: relative; margin-top: 4px; }
+.compare .chartwrap:focus-visible { outline: 2px solid var(--accent);
+                                    outline-offset: 3px; border-radius: 6px; }
+.compare svg { display: block; width: 100%; height: auto; overflow: visible; }
+.compare .hit { cursor: crosshair; }
+
+/* Axis and end labels wear text tokens; only the mark carries identity. The
+   end labels are the exception the palette's relief rule asks for -- in light
+   mode three of the hues sit below 3:1 on white, so the value is always
+   readable as text as well, and repeated in the table below. */
+.compare .ax { fill: var(--ink-3); font-size: 10px; font-family: var(--mono); }
+.compare .endlabel { font-size: 10.5px; font-weight: 700; font-family: var(--mono); }
+
+.chart-tip {
+  position: absolute; top: 8px; pointer-events: none;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 9px; font-size: 11.5px;
+  box-shadow: 0 4px 14px rgba(0,0,0,.16); min-width: 132px; z-index: 5;
+}
+.tip-date { color: var(--ink-3); font-family: var(--mono); font-size: 10.5px;
+            margin-bottom: 4px; }
+.tip-row { display: grid; grid-template-columns: 10px 1fr auto; gap: 6px;
+           align-items: center; line-height: 1.7; }
+
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+          vertical-align: -1px; margin-right: 6px; }
+.compare-table { margin-top: 6px; }
+
+/* Your own trades, overlaid on the score chart. */
+.trademark { pointer-events: none; }
+.tradehit { cursor: pointer; }
+.tip-sum { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line);
+           font-size: 11.5px; }
+.tip-note { color: var(--ink-2); font-size: 11px; margin-top: 3px;
+            max-width: 30ch; line-height: 1.45; }

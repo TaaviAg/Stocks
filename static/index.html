@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock Trading Tracker</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="mark"></span>
+    <h1>Stock Trading Tracker</h1>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="pick" class="active">Hotlist &amp; pick</button>
+    <button data-tab="trades">Trades</button>
+    <button data-tab="history">History</button>
+    <button data-tab="record">Track record</button>
+  </nav>
+  <button id="refresh" class="ghost"
+          title="Re-fetch prices from Yahoo now instead of waiting for the 10-minute cache to expire. Only prices - your trades are not affected.">Refresh prices</button>
+</header>
+
+<div id="toast" class="toast" hidden></div>
+
+<!-- ===================================================== hotlist &amp; pick -->
+<main id="tab-pick" class="tab active">
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Hotlist</h2>
+      <p class="sub">The candidates in play &mdash; leave any slot empty to
+         compare fewer. Use Yahoo symbols; non-US listings need a suffix
+         (<code>TKM1T.TL</code>, <code>NOKIA.HE</code>, <code>VOW3.DE</code>).</p>
+    </div>
+    <div id="hotlist" class="slots"></div>
+    <div class="actions">
+      <button id="run" class="primary">Analyse &amp; recommend</button>
+      <span id="hotlist-state" class="pending"></span>
+      <label class="check"><input type="checkbox" id="save-rec" checked>
+        Save this recommendation to the log</label>
+    </div>
+  </section>
+
+  <section id="result" hidden></section>
+</main>
+
+<!-- ================================================================ trades -->
+<main id="tab-trades" class="tab">
+  <section class="panel">
+    <div class="panel-head"><h2>Open positions</h2>
+      <p class="sub">Profit and loss is marked to the <strong>latest traded
+        price</strong>, including pre- and post-market &mdash; the tag next to it
+        says which. Scores, saved recommendations and grading deliberately stay
+        on <strong>completed daily closes</strong>, so a recommendation is
+        reproducible and every candidate is compared like for like.</p></div>
+    <div id="open-trades"></div>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><h2>Closed positions</h2></div>
+    <div id="closed-trades"></div>
+  </section>
+</main>
+
+<!-- =============================================================== history -->
+<main id="tab-history" class="tab">
+  <section class="panel">
+    <div class="panel-head"><h2>Recommendation log</h2>
+      <p class="sub">Every call, with the full indicator snapshot behind it.
+        &ldquo;Since&rdquo; shows how the candidates have moved from the day scored to today.</p></div>
+    <div id="history"></div>
+  </section>
+</main>
+
+<!-- ========================================================== track record -->
+<main id="tab-record" class="tab">
+  <section class="panel">
+    <div class="panel-head"><h2>Track record</h2>
+      <p class="sub">Built only from closed, graded trades.</p></div>
+    <div id="scoreboard"></div>
+  </section>
+</main>
+
+<dialog id="buy-dialog">
+  <h2 id="buy-title">Log a buy</h2>
+  <p class="sub" id="buy-sub"></p>
+
+  <div class="lot-grid" id="lot-grid">
+    <div class="lot-head">
+      <span>Date</span><span class="num">Shares</span><span class="num">Price</span>
+      <span class="num">Fee</span><span></span>
+    </div>
+    <div id="lot-rows"></div>
+  </div>
+  <button type="button" id="add-lot" class="tiny">+ Add another package</button>
+
+  <div id="buy-total" class="buy-total"></div>
+
+  <label class="field" style="margin-top:12px"><span>Note (optional)</span>
+    <input type="text" id="buy-note" placeholder="e.g. broke out of the base"></label>
+
+  <div class="dialog-actions">
+    <button type="button" id="buy-cancel">Cancel</button>
+    <button type="button" id="buy-ok" class="primary">Log buy</button>
+  </div>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

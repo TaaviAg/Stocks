@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+
+# The whole data directory: it holds the live trade log and its timestamped
+# backups. `data/*.db` did NOT match `stocks.db.backup_20260904_102521`, so the
+# narrower pattern would have committed a real position history to the repo.
+data/
+
+# Local overrides of the scoring weights and thresholds.
+config.json
