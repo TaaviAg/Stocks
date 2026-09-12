@@ -414,6 +414,34 @@ reload; editing `app/*` needs a server restart (uvicorn runs without `--reload`)
 bar long. ADX read 0, Bollinger bands collapsed, `analyse` returned `ok=False`.
 When several unrelated indicator tests fail at once, suspect the fixture.
 
+## The daily report runs in the cloud, not on this PC
+
+`tools/daily_report.py` scores the watchlist against the latest completed close
+and prints a markdown table. A scheduled cloud agent (routine
+`trig_01KXBv71RCL4t3SpV3SZnnhF`, weekdays 04:00 UTC = 07:00 Tallinn) clones the
+GitHub repo, pip-installs pandas/numpy/yfinance, runs the script and relays its
+stdout. No laptop involved -- which was the whole point.
+
+Three separations make that possible:
+
+- **It reads `watchlist.json`, not the SQLite hotlist.** The hotlist is local
+  state that never leaves the machine. The watchlist is a committed file, so it
+  can be edited from a phone through GitHub's web editor and the next run picks
+  it up. The two are deliberately allowed to diverge.
+- **It touches no database and writes nothing.** It cannot corrupt a position
+  history it cannot see, and it is safe to run repeatedly.
+- **The logic is in the repo, not in the cron prompt.** The prompt only installs,
+  runs and relays. Anything worth versioning is in the script.
+
+The routine's prompt forbids committing and forbids inventing numbers: every
+figure must come from the script's stdout. An LLM relaying share prices from
+memory is the failure mode to design against.
+
+**Exit 2 is the interesting failure.** It means nothing could be scored, which
+almost always means Yahoo refused the host -- cloud agents run on datacenter
+IPs, the same unverified risk that blocks the Supabase plan below. The script
+says so explicitly rather than printing an empty table.
+
 ## Parked: running it away from this PC
 
 Considered on 2026-09-03 and deliberately deferred. Recorded so it is not
