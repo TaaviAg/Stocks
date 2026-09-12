@@ -1,0 +1,4 @@
+{
+  "_comment": "Tickers the daily cloud report scores. Edit this file (GitHub's web editor works from a phone) and the next scheduled run picks it up. Deliberately separate from the app's own hotlist, which lives in the local SQLite database and does not leave the machine.",
+  "tickers": ["AMZN", "MSFT", "META", "GOOGL", "AAPL", "TSLA", "NVDA", "IVV"]
+}
