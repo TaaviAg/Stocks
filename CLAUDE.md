@@ -231,6 +231,141 @@ from its own summary columns, so there is exactly one code path. It is
 idempotent (`NOT IN (SELECT trade_id FROM trade_lots)`) and both properties are
 tested.
 
+## Logging a trade from the Trades tab
+
+Added 2026-09-14 after the user traded while away from the laptop and had no
+way to record it except by running an analysis and launching from a card.
+**+ Log a trade** opens the same package dialog in a third mode (`"free"`):
+the ticker is typed, every package takes its real date and price, and the
+recommendation to grade against is *chosen* instead of implied. A sale that
+also happened while away is recorded afterwards on the position, with its date.
+
+The recommendation picker only offers calls the trade can honestly be graded
+against, and the server enforces the same rules rather than trusting the page:
+
+- **The ticker must be one of that call's candidates.** Outside the field there
+  is no rank to compute and no decision cost.
+- **The call must be scored on or before the first buy.** A recommendation made
+  after the trade is hindsight -- grading against it would flatter the model.
+  The newest eligible call is the default, since that is the one that was
+  current when the decision was made; later ones are hidden with a note saying
+  why. "Don't grade — P&L only" is always available.
+- **The ticker must exist on Yahoo** (`history(ticker, "1mo")`). A position on a
+  typo could never be marked to market or graded, so it is refused on entry
+  instead of failing quietly later.
+
+`today()` in the frontend used `toISOString()`, which is UTC -- from midnight
+until 03:00 in Tallinn "today" was still yesterday. Harmless as a default date,
+wrong as the bound for "a buy can't be in the future", so it now builds the
+local date.
+
+## The Trades tab is a list, and one trade is a detail view
+
+Changed 2026-09-14 when four trades as stacked cards already gave no overview.
+
+**List**: one row per trade -- status, ticker, opened, closed, days held,
+shares, average cost, exit (or last price for an open trade), invested, P&L,
+return, and grading rank. Every column sorts; All/Open/Closed and a ticker
+filter narrow it; the footer totals it **per currency**. `tradeRow()` computes
+every figure a row shows in one place, so cells, sort keys and totals cannot
+disagree. Its totals were checked against the Performance tab and match.
+
+`GET /api/trades?marks=true` adds each trade's currency and live quotes for the
+list. It is opt-in because many internal refreshes call `/api/trades` and none
+of them should each hit Yahoo; the currency logic is `_currencies_and_quotes`,
+shared with `/api/performance`.
+
+**Detail**: the full card, at `#trade/<id>`, so refresh, a direct link and the
+browser back button all behave. Switching tab strips the hash so a later reload
+lands on the list. Deleting a trade returns to the list.
+
+The detail's buys and sales are **one chronological transactions table** with
+a running "held after" column. Separate Bought and Sold tables sized their
+columns independently, so shares and prices did not line up, and the running
+holding had nowhere to go.
+
+**Amounts are rounded to 6 places before display, as the server rounds its
+totals.** 17 x 569.685 + 1 computed in the browser is 9685.644999..., which
+showed as 9,685.64 on the row directly under a summary reading 9,685.65 --
+one amount, two figures, on the same screen.
+
+## Correcting a trade
+
+Added 2026-09-14: any buy or sale can be corrected in place (✎ on its row, on
+open AND closed trades), and a trade's ticker, linked recommendation and note
+through **Edit** on its header. `PATCH /api/lots/{id}`, `/api/exits/{id}`,
+`/api/trades/{id}`.
+
+**The grade is re-derived after every change, never kept.** `db._changed()`
+recomputes the summary and nulls `outcome`; every mutating endpoint then calls
+`_grade_if_closed`. Before this, a closed trade's verdict was computed once and
+frozen, so correcting a mistyped sale price would have left the old P&L, rank
+and decision cost in place. Consequence: adding a forgotten buy to a closed
+trade is now allowed (it reopens with the unsold shares) instead of refused.
+
+**An edit is validated as a whole history, atomically.**
+`position.first_oversell()` walks the proposed buys and sales in date order and
+names the first sale that would sell more than was held -- shrinking a package,
+moving a buy past its sale, or deleting a buy whose shares were sold. The check
+and the write share one transaction, so a refused edit changes nothing. This
+also closed an older gap: `delete_lot` only counted rows, and could leave a
+closed trade quietly "sold more than bought".
+
+**Creation and editing share the same rules** (`_check_ticker_exists`,
+`_check_recommendation`, `_check_not_future`). Editing a buy's date re-checks
+hindsight against the first-buy date the trade *would* have; changing the
+ticker re-checks that it is still a candidate of the linked call.
+
+**A dialog must never turn a transient display fallback into a saved choice.**
+Typing a wrong ticker hides the recommendations that no longer apply, and the
+select falls back to "Don't grade". The first version wrote that fallback back
+into the stored choice, so correcting the typo and pressing Save silently
+unlinked the trade. The intended choice now lives apart from the select
+(`dataset.chosen`, `buy.recChoice`) and only an explicit pick moves it. Caught
+by testing typo → fix, not by reading the code.
+
+Verified on a throwaway trade only; the four real trades were fingerprinted
+(SHA-256 over every field including stored grades) before and after and matched.
+
+## The Performance tab
+
+Added 2026-09-14: monthly trade counts, monthly realised P&L, and a running
+total since the first trade. The maths is `app/performance.py`, pure functions
+over trade dicts, served by `GET /api/performance`.
+
+Definitions, each a deliberate choice:
+
+- **P&L is dated by the sale that banked it**, not by the trade. A position
+  bought in August and sold in September is September's; one sold in halves
+  across two months splits between them. This needed per-sale figures, so the
+  cost-basis walk in `position.py` was factored into `_walk()`, which returns
+  one dated entry per sale. `economics()` now consumes the same walk, so the
+  monthly sums cannot drift from the trade totals. The refactor was checked
+  bit-for-bit against the four real trades before anything else was built.
+- **Capital traded = the cost of every buy, fees included** (`capital_bought`),
+  open positions too. It equals `basis_sold` -- the return denominator -- once
+  everything is closed; while something is open the tile also shows how much
+  is still in open positions (`capital_open`), so the two figures are never
+  confused.
+- **Return % = realised P&L / cost basis of the shares sold.** It is return on
+  capital actually traded, not an account return -- there is no account size,
+  so idle capital is invisible. The page says so.
+- **"Opened" counts the first buy's month, "closed" the last sale's month.**
+  A trade spanning a month end appears once in each column.
+- **Win/loss is judged on the whole trade**, in its closing month. A trade whose
+  first sale lost but which closed up overall is a win.
+- **Empty months are listed**, from the first trade's month to today's. A month
+  with no trades is information.
+- **Currencies are never summed.** Everything is grouped by the ticker's
+  currency (from the stored hotlist, else from Yahoo); an undeterminable one is
+  reported under "?" rather than guessed.
+- **Unrealised is shown only when every open position could be priced**, since
+  a partial sum would understate exposure without saying so.
+
+The running-total chart uses a **real time axis** with a step at each sale, so a
+fortnight without sales looks like a fortnight. Bars round only the end away
+from zero; the paired opened/closed bars sit 2px apart rather than bordered.
+
 ## Selling in parts
 
 `trade_exits` mirrors `trade_lots`, and `position.economics` walks both in date

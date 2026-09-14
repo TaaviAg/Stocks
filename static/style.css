@@ -1,4 +1,4 @@
-/* Stock Trading Tracker -- one stylesheet, no framework.
+﻿/* Stock Trading Tracker -- one stylesheet, no framework.
    Palette is defined once on :root and redefined for dark; nothing below the
    token block hard-codes a colour. */
 
@@ -492,3 +492,145 @@ tfoot td { border-top: 1px solid var(--line); border-bottom: 0;
            font-size: 11.5px; }
 .tip-note { color: var(--ink-2); font-size: 11px; margin-top: 3px;
             max-width: 30ch; line-height: 1.45; }
+
+/* ------------------------------------------- log a trade from the Trades tab */
+
+.head-row { display: flex; align-items: center; justify-content: space-between;
+            gap: 12px; flex-wrap: wrap; }
+
+.free-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 10px;
+             margin-top: 12px; }
+#buy-ticker { text-transform: uppercase; font-family: var(--mono); font-weight: 600; }
+#buy-ticker::placeholder { text-transform: none; font-weight: 400; }
+#buy-rec-note { margin-top: 6px; }
+/* Grid items default to min-width: auto, so a select holding a long option
+   label refused to shrink below that label and pushed the dialog into a
+   horizontal scrollbar. */
+.free-grid > * { min-width: 0; }
+.free-grid select { text-overflow: ellipsis; }
+
+/* Selects had no styling at all -- they only appear in this dialog. */
+select {
+  font: inherit; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 7px; padding: 7px 9px; width: 100%;
+}
+select:disabled { color: var(--ink-3); background: var(--surface-2); }
+select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+@media (max-width: 520px) { .free-grid { grid-template-columns: 1fr; } }
+
+/* ------------------------------------------------------------ performance */
+
+.perf .stats { margin-bottom: 16px; }
+.perf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+             gap: 14px; margin-bottom: 14px; }
+.perf-card { border: 1px solid var(--line); border-radius: var(--radius);
+             padding: 12px 14px 10px; background: var(--surface); }
+.perf-card h3 { font-size: 12.5px; color: var(--ink-2); font-weight: 600;
+                margin-bottom: 6px; }
+.perf-grid + .perf-card { margin-bottom: 14px; }
+
+.perf-chart { position: relative; }
+.perf-chart:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px;
+                            border-radius: 6px; }
+.perf-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.perf-chart .ax { fill: var(--ink-3); font-size: 10px; font-family: var(--mono); }
+.perf-chart .bar-label { fill: var(--ink-2); font-size: 10px; font-family: var(--mono);
+                         font-weight: 600; }
+.perf-chart .end-total { fill: var(--ink); font-size: 11px; font-family: var(--mono);
+                         font-weight: 700; }
+.perf-chart .tip-hit { cursor: default; }
+/* A column wash on the hovered month, drawn behind nothing: the hit rect is
+   transparent until it is the active one. */
+.perf-chart rect.tip-hit.on { fill: var(--ink); fill-opacity: .05; }
+.perf-chart .chart-tip { top: 4px; }
+
+.perf .legend i { width: 10px; height: 10px; border-radius: 3px; }
+.tip-kv { display: flex; justify-content: space-between; gap: 14px;
+          line-height: 1.7; font-size: 11.5px; }
+.tip-kv .swatch { margin-right: 5px; }
+.tip-total { border-top: 1px solid var(--line); margin-top: 3px; padding-top: 3px; }
+
+.perf-table tr.quiet td { color: var(--ink-3); }
+
+/* The shared .stats grid draws its dividers by letting a --line background
+   show through a 1px gap. With an odd number of tiles on a wrapped row, the
+   empty cell showed as a solid grey block. Here the dividers belong to the
+   tiles instead, so a leftover cell is just empty surface. */
+.perf .stats { background: var(--surface); gap: 0; }
+/* Outlines, not box-shadows: a shadow is painted over by the next tile's
+   background, which erased the row dividers. Outlines paint above backgrounds,
+   and the container clips the outer edge. */
+.perf .stats { overflow: hidden; }
+.perf .stat { outline: 1px solid var(--line); outline-offset: -0.5px; }
+
+/* ------------------------------------------------------------- corrections */
+
+.row-actions { white-space: nowrap; }
+.row-actions .tiny + .tiny { margin-left: 4px; }
+tr.editing td { background: var(--warn-bg); padding-top: 5px; padding-bottom: 5px; }
+tr.editing input { padding: 4px 6px; font-family: var(--mono); font-size: 12px; }
+tr.editing input[type=number] { text-align: right; min-width: 64px; }
+tr.editing .edit-preview { color: var(--ink-2); }
+.edit-actions .tiny + .tiny { margin-left: 4px; }
+#te-ticker { text-transform: uppercase; font-family: var(--mono); font-weight: 600; }
+.trade-note { margin: 0 0 6px; font-style: italic; }
+
+/* ------------------------------------------------------------ trade list */
+
+.list-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+              margin-top: 12px; }
+.list-tools input[type=search] {
+  font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px;
+  width: 190px; text-transform: uppercase; font-family: var(--mono);
+}
+.list-tools input[type=search]::placeholder { text-transform: none;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+/* A segmented control: one border around the group, the active one filled. */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px;
+       overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 6px 12px; font-size: 12.5px;
+              background: var(--surface); color: var(--ink-2); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on, .seg button.on:hover:not(:disabled) {
+  background: var(--surface-2); color: var(--ink); font-weight: 600; }
+
+.trade-table table { font-size: 12.5px; }
+.trade-table th { padding: 0; white-space: nowrap; }
+.trade-table th button.sort {
+  all: unset; box-sizing: border-box; display: block; width: 100%;
+  padding: 7px 9px; cursor: pointer; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--ink-3); font-weight: 600;
+}
+.trade-table th.num button.sort { text-align: right; }
+.trade-table th button.sort:hover, .trade-table th button.sort.on { color: var(--ink); }
+.trade-table th button.sort:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.trade-table td { white-space: nowrap; vertical-align: middle; }
+.trade-row { cursor: pointer; }
+.trade-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.trade-table tfoot td { border-top: 1px solid var(--line); background: var(--surface-2); }
+.cell-note { font-size: 10.5px; color: var(--ink-3); font-family: inherit; }
+.has-note { color: var(--ink-3); font-size: 11px; }
+
+/* ------------------------------------------------------------ trade detail */
+
+.back { display: inline-block; margin-bottom: 12px; color: var(--accent);
+        text-decoration: none; font-weight: 500; font-size: 13px; }
+.back:hover { text-decoration: underline; }
+#trade-detail .trade { margin-bottom: 0; }
+
+.ledger-summary { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 4px 0 8px;
+                  font-size: 12.5px; color: var(--ink-2); }
+.ledger-summary .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em;
+                     color: var(--ink-3); margin-right: 3px; }
+.ledger-summary strong { color: var(--ink); }
+.txn { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px;
+       border-radius: 5px; }
+.txn.buy { background: var(--surface-2); color: var(--ink-2); }
+.txn.sell { background: var(--up-bg); color: var(--up); }
+/* Dates and amounts broke across two lines on a narrow screen; the ledger
+   scrolls sideways inside its frame instead. */
+.ledger td { white-space: nowrap; }

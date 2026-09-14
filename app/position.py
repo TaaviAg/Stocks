@@ -30,13 +30,19 @@ def _events(lots, exits):
     return out
 
 
-def economics(lots, exits, price=None):
-    """Walk a position. `price`, when given, marks the open shares to market."""
+def _walk(lots, exits):
+    """The one moving-average-cost walk. Returns (state, realisations).
+
+    `realisations` is one entry per sale, carrying the date it happened, so
+    realised P&L can be bucketed by when it was actually banked -- a position
+    bought in August and sold in September belongs to September. `economics`
+    consumes the same walk, so the per-sale figures always sum to the totals.
+    """
     qty = 0.0            # shares held right now in the walk
     cost = 0.0           # cost basis of those shares, fees included
     bought_qty = bought_cost = 0.0
-    sold_qty = sold_basis = proceeds = realised = 0.0
     oversold = 0.0
+    realisations = []
 
     for _date, _rank, _id, kind, rec in _events(lots, exits):
         if kind == "buy":
@@ -59,12 +65,33 @@ def economics(lots, exits, price=None):
         fee = (rec["fee"] or 0.0) * (take / rec["qty"] if rec["qty"] else 1.0)
         got = take * rec["price"] - fee
 
-        realised += got - basis
-        sold_qty += take
-        sold_basis += basis
-        proceeds += got
+        realisations.append({
+            "date": rec["exit_date"], "qty": take, "basis": basis,
+            "proceeds": got, "pnl": got - basis, "fee": fee,
+        })
         cost -= basis
         qty -= take
+
+    state = {"qty": qty, "cost": cost, "bought_qty": bought_qty,
+             "bought_cost": bought_cost, "oversold": oversold}
+    return state, realisations
+
+
+def realisations(lots, exits):
+    """Per-sale realised P&L, each dated by its sale. See `_walk`."""
+    return _walk(lots, exits)[1]
+
+
+def economics(lots, exits, price=None):
+    """Walk a position. `price`, when given, marks the open shares to market."""
+    state, sales = _walk(lots, exits)
+    qty, cost = state["qty"], state["cost"]
+    bought_qty, bought_cost = state["bought_qty"], state["bought_cost"]
+    oversold = state["oversold"]
+    sold_qty = sum(s["qty"] for s in sales)
+    sold_basis = sum(s["basis"] for s in sales)
+    proceeds = sum(s["proceeds"] for s in sales)
+    realised = sum(s["pnl"] for s in sales)
 
     open_qty = qty if qty > TOL else 0.0
     out = {
@@ -106,6 +133,25 @@ def economics(lots, exits, price=None):
         out["total_return_pct"] = out["realised_return_pct"]
 
     return out
+
+
+def first_oversell(lots, exits):
+    """The first sale that would sell more shares than were held at the time.
+
+    Returns (date, requested, held) or None. The walk itself clamps an oversell
+    so a bad history cannot produce nonsense numbers, but an edit that CREATES
+    one -- moving a buy after its sale, shrinking a package below what was later
+    sold -- must be refused with a reason rather than quietly clamped.
+    """
+    held = 0.0
+    for date, _rank, _id, kind, rec in _events(lots, exits):
+        if kind == "buy":
+            held += rec["qty"]
+        else:
+            if rec["qty"] - held > 1e-6:
+                return date, rec["qty"], max(held, 0.0)
+            held -= rec["qty"]
+    return None
 
 
 def can_sell(econ, qty):

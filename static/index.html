@@ -16,6 +16,7 @@
   <nav class="tabs" id="tabs">
     <button data-tab="pick" class="active">Hotlist &amp; pick</button>
     <button data-tab="trades">Trades</button>
+    <button data-tab="performance">Performance</button>
     <button data-tab="history">History</button>
     <button data-tab="record">Track record</button>
   </nav>
@@ -49,19 +50,31 @@
 
 <!-- ================================================================ trades -->
 <main id="tab-trades" class="tab">
-  <section class="panel">
-    <div class="panel-head"><h2>Open positions</h2>
-      <p class="sub">Profit and loss is marked to the <strong>latest traded
-        price</strong>, including pre- and post-market &mdash; the tag next to it
-        says which. Scores, saved recommendations and grading deliberately stay
-        on <strong>completed daily closes</strong>, so a recommendation is
-        reproducible and every candidate is compared like for like.</p></div>
-    <div id="open-trades"></div>
+  <section class="panel" id="trades-list-panel">
+    <div class="panel-head">
+      <div class="head-row">
+        <h2>Trades</h2>
+        <button type="button" id="log-trade" class="primary">+ Log a trade</button>
+      </div>
+      <div class="list-tools">
+        <div class="seg" id="trade-filter" role="group" aria-label="Show">
+          <button type="button" data-f="all" class="on">All</button>
+          <button type="button" data-f="open">Open</button>
+          <button type="button" data-f="closed">Closed</button>
+        </div>
+        <input type="search" id="trade-search" placeholder="Filter by ticker"
+               spellcheck="false" autocomplete="off">
+      </div>
+    </div>
+    <div id="trades-list"><div class="empty">Loading&hellip;</div></div>
   </section>
-  <section class="panel">
-    <div class="panel-head"><h2>Closed positions</h2></div>
-    <div id="closed-trades"></div>
-  </section>
+
+  <section id="trade-detail" hidden></section>
+</main>
+
+<!-- =========================================================== performance -->
+<main id="tab-performance" class="tab">
+  <div id="performance"><div class="empty">Loading&hellip;</div></div>
 </main>
 
 <!-- =============================================================== history -->
@@ -87,6 +100,20 @@
   <h2 id="buy-title">Log a buy</h2>
   <p class="sub" id="buy-sub"></p>
 
+  <!-- Only in "Log a trade" mode, opened from the Trades tab: the ticker is
+       typed in rather than taken from a card, and the recommendation to grade
+       against is chosen rather than implied. -->
+  <div id="buy-free" hidden>
+    <div class="free-grid">
+      <label class="field"><span>Ticker</span>
+        <input type="text" id="buy-ticker" placeholder="e.g. MSFT" spellcheck="false"
+               autocomplete="off"></label>
+      <label class="field"><span>Grade against</span>
+        <select id="buy-rec"></select></label>
+    </div>
+    <p class="sub" id="buy-rec-note"></p>
+  </div>
+
   <div class="lot-grid" id="lot-grid">
     <div class="lot-head">
       <span>Date</span><span class="num">Shares</span><span class="num">Price</span>
@@ -104,6 +131,26 @@
   <div class="dialog-actions">
     <button type="button" id="buy-cancel">Cancel</button>
     <button type="button" id="buy-ok" class="primary">Log buy</button>
+  </div>
+</dialog>
+
+<dialog id="trade-dialog">
+  <h2 id="te-title">Edit trade</h2>
+  <p class="sub">Correct the ticker, the recommendation it is graded against, or
+    the note. Buys and sales are corrected on their own rows with &#9998;. A closed
+    trade is re-graded when you save.</p>
+  <div class="free-grid">
+    <label class="field"><span>Ticker</span>
+      <input type="text" id="te-ticker" spellcheck="false" autocomplete="off"></label>
+    <label class="field"><span>Grade against</span>
+      <select id="te-rec"></select></label>
+  </div>
+  <p class="sub" id="te-rec-note"></p>
+  <label class="field" style="margin-top:12px"><span>Note</span>
+    <input type="text" id="te-note"></label>
+  <div class="dialog-actions">
+    <button type="button" id="te-cancel">Cancel</button>
+    <button type="button" id="te-save" class="primary">Save</button>
   </div>
 </dialog>
 

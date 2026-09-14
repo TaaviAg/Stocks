@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import db, position, review
+from app import db, performance, position, review
 from app.config import CFG, ROOT
 from app.data import (DataError, clear_cache, close_on_or_before, history,
                       live_quote, resolve)
@@ -348,9 +348,18 @@ def api_delete_recommendation(rec_id: int):
 # -------------------------------------------------------------------- trades
 
 @app.get("/api/trades")
-def api_trades(status: str | None = None):
+def api_trades(status: str | None = None, marks: bool = False):
+    """Every trade. `marks=true` also returns currency and live quotes, which
+    the trade table needs for totals and open P&L -- off by default so the many
+    internal refreshes do not each hit Yahoo."""
     trades = db.list_trades(status)
-    return {"trades": trades, "scoreboard": review.scoreboard(db.list_trades())}
+    out = {"trades": trades, "scoreboard": review.scoreboard(db.list_trades())}
+    if marks:
+        currencies, quotes = _currencies_and_quotes(trades)
+        for t in trades:
+            t["currency"] = currencies.get(t["ticker"])
+        out["quotes"] = dict((k, v) for k, v in quotes.items() if v)
+    return out
 
 
 def _resolve_lot(ticker, lot):
@@ -367,6 +376,7 @@ def _resolve_lot(ticker, lot):
         raise HTTPException(400, "A buy needs a share count greater than zero.")
     if price <= 0:
         raise HTTPException(400, "A buy needs a price greater than zero.")
+    _check_not_future(when, "Buy")
     return {"lot_date": when, "qty": float(lot.qty), "price": float(price),
             "fee": float(lot.fee or 0.0), "note": lot.note}
 
@@ -374,15 +384,57 @@ def _resolve_lot(ticker, lot):
 @app.post("/api/trades")
 def api_open_trade(body: OpenTradeBody):
     ticker = body.ticker.strip().upper()
+    if not ticker:
+        raise HTTPException(400, "A trade needs a ticker.")
     lots = body.lots
     if not lots:
         # Flat single-buy form: turn it into the one-lot case rather than
         # keeping a second way for a position to exist.
         lots = [LotBody(lot_date=body.entry_date, qty=body.qty or 1.0,
                         price=body.entry_price)]
+
+    _check_ticker_exists(ticker)
     resolved = [_resolve_lot(ticker, l) for l in lots]
+    _check_recommendation(ticker, body.recommendation_id,
+                          min(l["lot_date"] for l in resolved))
     tid = db.open_trade(body.recommendation_id, ticker, resolved, body.note)
     return db.get_trade(tid)
+
+
+def _check_ticker_exists(ticker):
+    """A position on a symbol Yahoo does not know could never be marked to
+    market or graded, so refuse it on entry instead of failing quietly later."""
+    history(ticker, "1mo", CFG["interval"], ttl=CFG["cache_ttl_seconds"])
+
+
+def _check_recommendation(ticker, rec_id, first_buy):
+    """The two conditions under which a trade can honestly be graded against a
+    call. Shared by creating and editing, so an edit cannot sneak past a rule
+    that creation enforces."""
+    if not rec_id:
+        return
+    rec = db.get_recommendation(rec_id)
+    if not rec:
+        raise HTTPException(404, "No recommendation %d." % rec_id)
+    # Grading ranks the traded ticker among the recommendation's candidates.
+    # Outside that field there is no rank and no decision cost to compute.
+    if ticker not in rec["tickers"]:
+        raise HTTPException(
+            400, "%s was not a candidate in recommendation #%d (%s), so the "
+                 "trade cannot be graded against it."
+                 % (ticker, rec["id"], ", ".join(rec["tickers"])))
+    # A call scored after the buy is hindsight: it did not exist when the
+    # decision was made, and grading against it would flatter the model.
+    if first_buy < rec["as_of"]:
+        raise HTTPException(
+            400, "The first buy on %s is before recommendation #%d was "
+                 "scored (close of %s). Link an earlier recommendation, or "
+                 "grade it against none." % (first_buy, rec["id"], rec["as_of"]))
+
+
+def _check_not_future(date_str, what):
+    if date_str > datetime.date.today().isoformat():
+        raise HTTPException(400, "%s date %s is in the future." % (what, date_str))
 
 
 @app.post("/api/trades/{trade_id}/lots")
@@ -390,13 +442,15 @@ def api_add_lot(trade_id: int, body: LotBody):
     trade = db.get_trade(trade_id)
     if not trade:
         raise HTTPException(404, "No trade %d." % trade_id)
-    if trade["status"] == "closed":
-        raise HTTPException(400, "Trade %d is closed - adding to it would change "
-                                 "a cost basis that has already been graded."
-                                 % trade_id)
+    # Adding a forgotten buy to a closed trade used to be refused because its
+    # grade was frozen. Grades are now re-derived after every change, so the
+    # correction is allowed: the position reopens with the unsold shares.
     lot = _resolve_lot(trade["ticker"], body)
-    return db.add_lot(trade_id, lot["lot_date"], lot["qty"], lot["price"],
-                      lot["fee"], lot["note"])
+    _check_recommendation(trade["ticker"], trade["recommendation_id"],
+                          min([lot["lot_date"]] + [l["lot_date"] for l in trade["lots"]]))
+    db.add_lot(trade_id, lot["lot_date"], lot["qty"], lot["price"],
+               lot["fee"], lot["note"])
+    return _grade_if_closed(trade_id)
 
 
 @app.delete("/api/lots/{lot_id}")
@@ -407,7 +461,105 @@ def api_delete_lot(lot_id: int):
         raise HTTPException(400, str(exc))
     if trade is None:
         raise HTTPException(404, "No lot %d." % lot_id)
-    return trade
+    return _grade_if_closed(trade["id"])
+
+
+class EntryEdit(BaseModel):
+    """A correction to one buy or sale. Omitted fields are left as they are."""
+    date: str | None = None
+    qty: float | None = None
+    price: float | None = None
+    fee: float | None = None
+    note: str | None = None
+
+
+def _edit_entry(table, row_id, body, what):
+    if body.qty is not None and body.qty <= 0:
+        raise HTTPException(400, "%s needs a share count greater than zero." % what)
+    if body.price is not None and body.price <= 0:
+        raise HTTPException(400, "%s needs a price greater than zero." % what)
+    if body.fee is not None and body.fee < 0:
+        raise HTTPException(400, "A fee cannot be negative.")
+    date = body.date.strip() if body.date else None
+    if date:
+        try:
+            datetime.date.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(400, "Not a date: %r." % body.date)
+        _check_not_future(date, what)
+
+    date_key = "lot_date" if table == "trade_lots" else "exit_date"
+    fields = {date_key: date, "qty": body.qty, "price": body.price,
+              "fee": body.fee, "note": body.note}
+
+    if table == "trade_lots" and date:
+        # Moving a buy can change the first-buy date, which is what the
+        # hindsight rule checks. Test the date the trade WOULD have.
+        owner = _trade_of("trade_lots", row_id)
+        if owner:
+            dates = [date if l["id"] == row_id else l["lot_date"] for l in owner["lots"]]
+            _check_recommendation(owner["ticker"], owner["recommendation_id"], min(dates))
+
+    try:
+        trade = db.update_entry(table, row_id, fields)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if trade is None:
+        raise HTTPException(404, "No such %s." % what.lower())
+    return _grade_if_closed(trade["id"])
+
+
+def _trade_of(table, row_id):
+    with db.connect() as conn:
+        row = conn.execute("SELECT trade_id FROM %s WHERE id = ?" % table,
+                           (row_id,)).fetchone()
+    return db.get_trade(row["trade_id"]) if row else None
+
+
+@app.patch("/api/lots/{lot_id}")
+def api_edit_lot(lot_id: int, body: EntryEdit):
+    return _edit_entry("trade_lots", lot_id, body, "Buy")
+
+
+@app.patch("/api/exits/{exit_id}")
+def api_edit_exit(exit_id: int, body: EntryEdit):
+    return _edit_entry("trade_exits", exit_id, body, "Sale")
+
+
+class TradeEdit(BaseModel):
+    """A correction to the trade itself. `recommendation_id: 0` unlinks it."""
+    ticker: str | None = None
+    recommendation_id: int | None = None
+    note: str | None = None
+
+
+@app.patch("/api/trades/{trade_id}")
+def api_edit_trade(trade_id: int, body: TradeEdit):
+    trade = db.get_trade(trade_id)
+    if not trade:
+        raise HTTPException(404, "No trade %d." % trade_id)
+
+    ticker = body.ticker.strip().upper() if body.ticker else trade["ticker"]
+    if not ticker:
+        raise HTTPException(400, "A trade needs a ticker.")
+    if ticker != trade["ticker"]:
+        _check_ticker_exists(ticker)
+
+    if body.recommendation_id is None:
+        rec_id = trade["recommendation_id"]
+    else:
+        rec_id = body.recommendation_id or None
+    # Re-checked even when only the ticker changed: a MSFT trade linked to a
+    # MSFT/META/AMZN call stops being gradeable against it if it becomes NVDA.
+    _check_recommendation(ticker, rec_id, trade["entry_date"])
+
+    fields = {"ticker": ticker, "recommendation_id": rec_id}
+    if rec_id:
+        fields["followed_pick"] = 1 if db.get_recommendation(rec_id)["pick"] == ticker else 0
+    if body.note is not None:
+        fields["note"] = body.note.strip() or None
+    db.update_trade(trade_id, fields)
+    return _grade_if_closed(trade_id)
 
 
 def _grade_if_closed(trade_id, note=None):
@@ -440,6 +592,7 @@ def api_sell(trade_id: int, body: SellBody):
         raise HTTPException(400, "Trade %d is already fully sold." % trade_id)
 
     when = (body.exit_date or datetime.date.today().isoformat()).strip()
+    _check_not_future(when, "Sale")
     if when < trade["entry_date"]:
         raise HTTPException(400, "Sell date %s is before the first buy on %s."
                             % (when, trade["entry_date"]))
@@ -470,7 +623,7 @@ def api_delete_exit(exit_id: int):
     trade = db.delete_exit(exit_id)
     if trade is None:
         raise HTTPException(404, "No sale %d." % exit_id)
-    return trade
+    return _grade_if_closed(trade["id"])
 
 
 @app.post("/api/trades/{trade_id}/close")
@@ -497,6 +650,37 @@ def api_review_trade(trade_id: int):
 def api_delete_trade(trade_id: int):
     db.delete_trade(trade_id)
     return {"ok": True}
+
+
+@app.get("/api/performance")
+def api_performance():
+    """Monthly and since-inception results across every logged trade."""
+    trades = db.list_trades()
+    currencies, quotes = _currencies_and_quotes(trades)
+    open_tickers = set(t["ticker"] for t in trades if t["econ"]["qty_open"] > 0)
+    prices = dict((t, quotes[t]["price"]) for t in open_tickers if quotes.get(t))
+    return performance.build(trades, currencies, prices)
+
+
+def _currencies_and_quotes(trades):
+    """Currency per ticker, plus live quotes for anything open or unknown.
+
+    Currency comes from the stored hotlist where known, otherwise from Yahoo.
+    It decides which figures may be added together, so a ticker whose currency
+    cannot be established is left out of the map (reported as "?") rather than
+    guessed.
+    """
+    tickers = sorted(set(t["ticker"] for t in trades))
+    currencies = dict((h["ticker"], h["currency"]) for h in db.get_hotlist()
+                      if h.get("currency"))
+    missing = [t for t in tickers if t not in currencies]
+    open_tickers = sorted(set(t["ticker"] for t in trades
+                              if t["econ"]["qty_open"] > 0))
+    quotes = _quotes_for(sorted(set(missing) | set(open_tickers)))
+    for t in missing:
+        if quotes.get(t) and quotes[t].get("currency"):
+            currencies[t] = quotes[t]["currency"]
+    return currencies, quotes
 
 
 @app.get("/api/scoreboard")

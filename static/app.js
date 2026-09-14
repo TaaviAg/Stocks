@@ -1,4 +1,4 @@
-/* Stock Trading Tracker -- frontend. No framework, no build step. */
+﻿/* Stock Trading Tracker -- frontend. No framework, no build step. */
 
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -46,14 +46,25 @@ function pct(v, d = 2) {
   return `<span class="${cls} mono">${sign}${num(v, d)}%</span>`;
 }
 
-const today = () => new Date().toISOString().slice(0, 10);
+/** The LOCAL calendar date. `toISOString()` is UTC, which in Tallinn meant that
+ *  from midnight until 03:00 "today" was still yesterday -- wrong as a default
+ *  date on a trade, and wrong as the bound for "a buy can't be in the future". */
+const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${
+    String(d.getDate()).padStart(2, "0")}`;
+};
 
 /* ------------------------------------------------------------------ tabs */
 
 $$("#tabs button").forEach(b => b.onclick = () => {
+  // Leaving a trade's detail view: drop its #trade/<id> so a refresh or a later
+  // click on Trades lands on the list rather than back inside one trade.
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
   $$("#tabs button").forEach(x => x.classList.toggle("active", x === b));
   $$(".tab").forEach(t => t.classList.toggle("active", t.id === "tab-" + b.dataset.tab));
   if (b.dataset.tab === "trades") loadTrades();
+  if (b.dataset.tab === "performance") loadPerformance();
   if (b.dataset.tab === "history") loadHistory();
   if (b.dataset.tab === "record") loadScoreboard();
 });
@@ -75,6 +86,7 @@ $("#refresh").onclick = async () => {
     await api("/api/refresh", { method: "POST" });
     const active = $("#tabs button.active").dataset.tab;
     if (active === "trades") await loadTrades();
+    else if (active === "performance") await loadPerformance();
     else if (active === "history") await loadHistory();
     else if (active === "record") await loadScoreboard();
     // On the pick tab, refresh the quotes only. Re-running the analysis would
@@ -855,31 +867,117 @@ function sparkline(c) {
 /** A position is often built in several packages at different prices, so the
  *  form takes a list of them rather than one quantity and one price. `mode` is
  *  either a new position or an addition to an open one. */
-const buy = { mode: "new", ticker: "", recId: null, tradeId: null, price: null };
+/*  mode "new"  -- launched from a candidate card; ticker and recommendation fixed
+    mode "add"  -- more packages on an open position
+    mode "free" -- launched from the Trades tab; ticker typed, recommendation
+                   chosen. For trades placed while the app was not running. */
+const buy = { mode: "new", ticker: "", recId: null, tradeId: null, price: null,
+              recs: [], recTouched: false };
 
-function openBuyDialog(opts) {
-  Object.assign(buy, opts);
-  $("#buy-title").textContent = buy.mode === "add"
-    ? `Buy more ${buy.ticker}` : `Log a buy of ${buy.ticker}`;
-  $("#buy-sub").innerHTML = buy.mode === "add"
-    ? `Added to the open position. The cost basis becomes the weighted average
-       of every package, and the grading window still starts at the first buy.`
-    : (buy.recId
-        ? `Linked to recommendation <strong>#${buy.recId}</strong>, so closing it
-           will grade the pick against the other candidates.`
-        : `Not linked to a recommendation - P&amp;L only, no grading.`);
+async function openBuyDialog(opts) {
+  Object.assign(buy, { recTouched: false, recChoice: "" }, opts);
+  const free = buy.mode === "free";
+  $("#buy-free").hidden = !free;
+  $("#buy-title").textContent = free ? "Log a trade"
+    : buy.mode === "add" ? `Buy more ${buy.ticker}` : `Log a buy of ${buy.ticker}`;
+  $("#buy-sub").innerHTML = free
+    ? `For trades placed while the app was not running. Enter each buy with the
+       date and price you actually got. <strong>Sold already?</strong> Log the buy
+       here, then record the sale on the position with its date.`
+    : buy.mode === "add"
+      ? `Added to the open position. The cost basis becomes the weighted average
+         of every package, and the grading window still starts at the first buy.`
+      : (buy.recId
+          ? `Linked to recommendation <strong>#${buy.recId}</strong>, so closing it
+             will grade the pick against the other candidates.`
+          : `Not linked to a recommendation - P&amp;L only, no grading.`);
   $("#buy-note").value = "";
   $("#lot-rows").innerHTML = "";
+  if (free) {
+    $("#buy-ticker").value = "";
+    try {
+      buy.recs = (await api("/api/recommendations")).recommendations;
+    } catch { buy.recs = []; }
+  }
   addLotRow();
   $("#buy-dialog").showModal();
-  setTimeout(() => $("#lot-rows input[data-k=qty]").focus(), 30);
+  setTimeout(() => (free ? $("#buy-ticker") : $("#lot-rows input[data-k=qty]")).focus(), 30);
 }
+
+/** Offer only the recommendations this trade can honestly be graded against.
+ *
+ *  Two filters, both about fairness to the result. The ticker must have been one
+ *  of that call's candidates, or there is no field to rank it in. And the call
+ *  must have been scored on or before the first buy -- a recommendation made
+ *  after the trade is hindsight, and grading against it would flatter the model.
+ *  The newest eligible call is the default, since that is the one that was
+ *  current when the trade was placed. */
+function paintRecOptions() {
+  if (buy.mode !== "free") return;
+  const sel = $("#buy-rec");
+  const note = $("#buy-rec-note");
+  const ticker = $("#buy-ticker").value.trim().toUpperCase();
+  const dates = readLotRows().map(r => r.lot_date).filter(Boolean).sort();
+  const firstBuy = dates[0] || today();
+
+  if (!ticker) {
+    sel.innerHTML = `<option value="">Enter a ticker first</option>`;
+    sel.disabled = true;
+    note.textContent = "";
+    return;
+  }
+  const withTicker = buy.recs.filter(r => r.tickers.includes(ticker));
+  const eligible = withTicker
+    .filter(r => r.as_of <= firstBuy)
+    .sort((a, b) => (b.as_of.localeCompare(a.as_of)) || (b.id - a.id));
+  const later = withTicker.length - eligible.length;
+
+  sel.disabled = false;
+  sel.innerHTML = eligible.map(r => `<option value="${r.id}">#${r.id} &middot; close ${
+      esc(r.as_of)} &middot; pick ${esc(r.pick)}${
+      r.pick === ticker ? " (following it)" : " (overriding it)"}</option>`).join("")
+    + `<option value="">Don't grade &mdash; P&amp;L only</option>`;
+
+  // Keep a deliberate choice whenever it is valid again; otherwise the default.
+  // The choice lives in `buy.recChoice`, not in the select, so a temporary
+  // typo that hides it does not erase it.
+  if (buy.recTouched && [...sel.options].some(o => o.value === buy.recChoice)) {
+    sel.value = buy.recChoice;
+  } else {
+    sel.value = eligible.length ? String(eligible[0].id) : "";
+  }
+
+  const parts = [];
+  if (!eligible.length) {
+    parts.push(withTicker.length
+      ? `No recommendation with ${esc(ticker)} was scored on or before ${esc(firstBuy)}.`
+      : `${esc(ticker)} is not in any saved recommendation, so this trade records P&amp;L only.`);
+  }
+  if (later) {
+    parts.push(`${later} later recommendation${later === 1 ? " is" : "s are"} hidden
+      &mdash; scored after this buy, so grading against ${later === 1 ? "it" : "them"}
+      would be hindsight.`);
+  }
+  note.innerHTML = parts.join(" ");
+}
+
+$("#buy-ticker").addEventListener("input", paintRecOptions);
+$("#buy-ticker").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); $("#lot-rows input[data-k=qty]").focus(); }
+});
+$("#buy-rec").addEventListener("change", e => {
+  buy.recTouched = true;
+  buy.recChoice = e.target.value;
+});
+$("#log-trade").onclick = () => openBuyDialog({
+  mode: "free", ticker: "", recId: null, tradeId: null, price: null,
+});
 
 function addLotRow(qty = "", price = null) {
   const row = document.createElement("div");
   row.className = "lot-row";
   row.innerHTML = `
-    <input type="date" data-k="date" value="${today()}">
+    <input type="date" data-k="date" value="${today()}" max="${today()}">
     <input type="number" data-k="qty" step="any" min="0" placeholder="0" value="${qty}">
     <input type="number" data-k="price" step="any" min="0" placeholder="0.00"
            value="${price ?? (buy.price ?? "")}">
@@ -912,6 +1010,9 @@ function readLotRows() {
 }
 
 function paintBuyTotal() {
+  // The first buy date decides which recommendations are eligible, so a changed
+  // date has to re-filter the list.
+  paintRecOptions();
   const rows = readLotRows().filter(r => r.qty > 0 && r.price > 0);
   const el = $("#buy-total");
   if (!rows.length) {
@@ -932,6 +1033,13 @@ $("#buy-ok").onclick = async () => {
   const rows = readLotRows();
   const bad = rows.find(r => !(r.qty > 0) || !(r.price > 0));
   if (bad) { toast("Every package needs a share count and a price.", true); return; }
+  if (buy.mode === "free") {
+    buy.ticker = $("#buy-ticker").value.trim().toUpperCase();
+    if (!buy.ticker) { toast("Enter the ticker you traded.", true); return; }
+    const future = rows.find(r => r.lot_date > today());
+    if (future) { toast("A buy date can't be in the future.", true); return; }
+    buy.recId = $("#buy-rec").value ? Number($("#buy-rec").value) : null;
+  }
 
   const btn = $("#buy-ok");
   btn.disabled = true;
@@ -951,7 +1059,11 @@ $("#buy-ok").onclick = async () => {
       toast(`Logged ${buy.ticker}: ${rows.length} package(s).`);
     }
     $("#buy-dialog").close();
-    $$("#tabs button").find(b => b.dataset.tab === "trades").click();
+    if (buy.mode === "add") {
+      loadTrades();                 // stay on the position that was added to
+    } else {
+      $$("#tabs button").find(b => b.dataset.tab === "trades").click();
+    }
   } catch (e) {
     toast(e.message, true);
   } finally {
@@ -964,17 +1076,59 @@ function openTrade(recId, ticker, price) {
   openBuyDialog({ mode: "new", ticker, recId: recId || null, tradeId: null, price });
 }
 
-async function loadTrades() {
-  const d = await api("/api/trades");
-  const open = d.trades.filter(t => t.status === "open");
-  const closed = d.trades.filter(t => t.status === "closed");
+/* ---------------------------------------------------- trades: list & detail */
 
-  $("#open-trades").innerHTML = open.length
-    ? open.map(openTradeCard).join("")
-    : `<div class="empty">No open positions. Run an analysis and log a buy.</div>`;
-  $("#closed-trades").innerHTML = closed.length
-    ? closed.map(closedTradeCard).join("")
-    : `<div class="empty">Nothing closed yet.</div>`;
+/* The Trades tab has two views. The LIST is one row per trade -- sortable,
+   filterable, with totals -- because cards stop giving an overall picture after
+   a handful of trades. The DETAIL is the full card for one trade. The detail
+   lives at #trade/<id> so a refresh or the browser's back button does the
+   obvious thing. */
+
+const tradeView = { filter: "all", search: "", sort: "opened", dir: -1 };
+
+function tradeIdFromHash() {
+  const m = location.hash.match(/^#trade\/(\d+)$/);
+  return m ? +m[1] : null;
+}
+
+function showTradesTab() {
+  $$("#tabs button").forEach(x => x.classList.toggle("active", x.dataset.tab === "trades"));
+  $$(".tab").forEach(t => t.classList.toggle("active", t.id === "tab-trades"));
+}
+
+window.addEventListener("hashchange", () => {
+  if (tradeIdFromHash() || location.hash === "#trades") {
+    showTradesTab();
+    loadTrades();
+  }
+});
+
+async function loadTrades() {
+  const detailId = tradeIdFromHash();
+  // Quotes and currencies are only worth fetching for the list; the detail
+  // view marks its one position to market through the review endpoint.
+  const d = await api(`/api/trades${detailId ? "" : "?marks=true"}`);
+  state.tradesById = Object.fromEntries(d.trades.map(t => [t.id, t]));
+  if (!detailId) state.tradeQuotes = d.quotes || {};
+
+  $("#trades-list-panel").hidden = !!detailId;
+  $("#trade-detail").hidden = !detailId;
+
+  if (!detailId) {
+    renderTradeList(d.trades);
+    return;
+  }
+  const t = state.tradesById[detailId];
+  if (!t) {
+    $("#trade-detail").innerHTML = `<div class="panel"><a href="#trades" class="back">&larr; All trades</a>
+      <div class="empty">Trade #${detailId} no longer exists.</div></div>`;
+    return;
+  }
+  $("#trade-detail").innerHTML = `<div class="panel">
+    <a href="#trades" class="back">&larr; All trades</a>
+    ${t.status === "open" ? openTradeCard(t) : closedTradeCard(t)}
+  </div>`;
+  const open = t.status === "open" ? [t] : [];
 
   $$("[data-sell]").forEach(b => b.onclick = () => doSell(+b.dataset.sell, false));
   $$("[data-sell-all]").forEach(b => b.onclick = () => doSell(+b.dataset.sellAll, true));
@@ -987,9 +1141,11 @@ async function loadTrades() {
     } catch (e) { toast(e.message, true); }
   });
   $$("[data-del-trade]").forEach(b => b.onclick = async () => {
-    if (!confirm("Delete this trade from the log?")) return;
+    const t = state.tradesById[+b.dataset.delTrade];
+    if (!confirm(`Delete this ${t ? t.ticker + " " : ""}trade and all its buys and `
+                 + "sales from the log? This cannot be undone.")) return;
     await api(`/api/trades/${b.dataset.delTrade}`, { method: "DELETE" });
-    loadTrades();
+    location.hash = "#trades";
   });
   $$("[data-buy-more]").forEach(b => b.onclick = () => openBuyDialog({
     mode: "add", ticker: b.dataset.ticker, tradeId: +b.dataset.buyMore,
@@ -1002,65 +1158,369 @@ async function loadTrades() {
       loadTrades();
     } catch (e) { toast(e.message, true); }
   });
+  $$("[data-edit-entry]").forEach(b => b.onclick = () => editEntryRow(b));
+  $$("[data-edit-trade]").forEach(b => b.onclick = () => openTradeEdit(+b.dataset.editTrade));
   open.forEach(t => markToMarket(t.id));
 }
 
-const shareText = q => num(q, q % 1 ? 4 : 0);
+const dayDiff = (a, b) =>
+  Math.round((Date.UTC(+b.slice(0, 4), +b.slice(5, 7) - 1, +b.slice(8, 10))
+            - Date.UTC(+a.slice(0, 4), +a.slice(5, 7) - 1, +a.slice(8, 10))) / 864e5);
+const daysText = n => `${n} day${n === 1 ? "" : "s"}`;
 
-/** The packages a position was built from. Shown whenever there is more than
- *  one, because a single weighted average hides what was actually paid. */
-function lotsTable(t, editable) {
-  const lots = t.lots || [];
-  if (lots.length < 2 && !editable) return "";
-  const cost = lots.reduce((s, l) => s + l.qty * l.price + (l.fee || 0), 0);
-  return `<div class="table-wrap" style="margin-top:10px"><table>
-    <thead><tr><th>Bought</th><th class="num">Shares</th><th class="num">Price</th>
-      <th class="num">Fee</th><th class="num">Cost</th>${editable ? "<th></th>" : ""}</tr></thead>
-    <tbody>${lots.map(l => `<tr>
-      <td class="mono">${esc(l.lot_date)}</td>
-      <td class="num">${shareText(l.qty)}</td>
-      <td class="num">${num(l.price, 4)}</td>
-      <td class="num">${l.fee ? num(l.fee) : "&mdash;"}</td>
-      <td class="num">${num(l.qty * l.price + (l.fee || 0))}</td>
-      ${editable ? `<td class="num">${lots.length > 1
-        ? `<button class="tiny danger" data-del-lot="${l.id}" title="Remove this package">&times;</button>`
-        : ""}</td>` : ""}
-    </tr>`).join("")}</tbody>
-    <tfoot><tr>
-      <td><strong>${lots.length} package${lots.length === 1 ? "" : "s"}</strong></td>
-      <td class="num"><strong>${shareText(t.qty)}</strong></td>
-      <td class="num"><strong>${num(t.entry_price, 4)}</strong></td>
-      <td class="num"></td>
-      <td class="num"><strong>${num(cost)}</strong></td>
-      ${editable ? "<td></td>" : ""}
-    </tr></tfoot></table></div>`;
+/** Everything the list shows about one trade, in one place, so the cells, the
+ *  sort keys and the totals cannot disagree with each other. */
+function tradeRow(t) {
+  const e = t.econ;
+  const q = state.tradeQuotes && state.tradeQuotes[t.ticker];
+  const open = e.qty_open > 0;
+  const unreal = open && q && e.open_avg_cost ? e.qty_open * (q.price - e.open_avg_cost) : null;
+  const realised = e.realised_pnl || 0;
+  // An open position with no price has no honest total yet.
+  const pnl = open ? (unreal === null ? null : realised + unreal) : e.realised_pnl;
+  const status = !open ? "closed" : e.partially_sold ? "part" : "open";
+  const o = t.outcome || {};
+  return {
+    t, status, open, pnl,
+    ret: pnl === null || !e.total_buy_cost ? null : (100 * pnl) / e.total_buy_cost,
+    opened: t.entry_date,
+    closed: open ? null : t.exit_date,
+    held: dayDiff(t.entry_date, open ? today() : t.exit_date),
+    invested: e.total_buy_cost,
+    avgCost: e.avg_buy_price,
+    exitOrMark: open ? (q ? q.price : null) : e.avg_exit_price,
+    markLabel: open && q ? q.label : null,
+    rank: o.graded && o.traded_rank ? o.traded_rank : null,
+    of: o.graded ? o.n_candidates : null,
+  };
 }
 
-/** The sales made so far. A position can be scaled out of over several days,
- *  so each one is kept and can be undone. */
-function exitsTable(t, editable) {
-  const exits = t.exits || [];
-  if (!exits.length) return "";
-  return `<div class="table-wrap" style="margin-top:10px"><table>
-    <thead><tr><th>Sold</th><th class="num">Shares</th><th class="num">Price</th>
-      <th class="num">Fee</th><th class="num">Proceeds</th>${editable ? "<th></th>" : ""}</tr></thead>
-    <tbody>${exits.map(x => `<tr>
-      <td class="mono">${esc(x.exit_date)}</td>
-      <td class="num">${shareText(x.qty)}</td>
-      <td class="num">${num(x.price, 4)}</td>
-      <td class="num">${x.fee ? num(x.fee) : "&mdash;"}</td>
-      <td class="num">${num(x.qty * x.price - (x.fee || 0))}</td>
-      ${editable ? `<td class="num"><button class="tiny danger" data-del-exit="${x.id}"
-        title="Undo this sale">&times;</button></td>` : ""}
-    </tr>`).join("")}</tbody>
-    <tfoot><tr>
-      <td><strong>${exits.length} sale${exits.length === 1 ? "" : "s"}</strong></td>
-      <td class="num"><strong>${shareText(t.econ.qty_sold)}</strong></td>
-      <td class="num"><strong>${num(t.econ.avg_exit_price, 4)}</strong></td>
-      <td class="num"></td>
-      <td class="num"><strong>${num(t.econ.proceeds)}</strong></td>
-      ${editable ? "<td></td>" : ""}
-    </tr></tfoot></table></div>`;
+const TRADE_COLUMNS = [
+  { key: "status", label: "Status", sort: r => ({ open: 0, part: 1, closed: 2 })[r.status] },
+  { key: "ticker", label: "Ticker", sort: r => r.t.ticker },
+  { key: "opened", label: "Opened", sort: r => r.opened },
+  { key: "closed", label: "Closed", sort: r => r.closed || "9999" },
+  { key: "held", label: "Held", num: true, sort: r => r.held },
+  { key: "shares", label: "Shares", num: true, sort: r => r.t.econ.qty_bought },
+  { key: "avg", label: "Avg cost", num: true, sort: r => r.avgCost },
+  { key: "exit", label: "Exit / last", num: true, sort: r => r.exitOrMark ?? -1 },
+  { key: "invested", label: "Invested", num: true, sort: r => r.invested },
+  { key: "pnl", label: "P&amp;L", num: true, sort: r => r.pnl ?? -1e18 },
+  { key: "ret", label: "Return", num: true, sort: r => r.ret ?? -1e18 },
+  { key: "graded", label: "Graded", sort: r => r.t.recommendation_id || 0 },
+];
+
+function renderTradeList(trades) {
+  const box = $("#trades-list");
+  if (!trades.length) {
+    box.innerHTML = `<div class="empty">No trades yet. Use <strong>+ Log a trade</strong>,
+      or run an analysis and log a buy from a card.</div>`;
+    return;
+  }
+  let rows = trades.map(tradeRow);
+  const counts = { all: rows.length, open: rows.filter(r => r.open).length,
+                   closed: rows.filter(r => !r.open).length };
+  $$("#trade-filter button").forEach(b => {
+    b.classList.toggle("on", b.dataset.f === tradeView.filter);
+    b.textContent = `${b.dataset.f[0].toUpperCase()}${b.dataset.f.slice(1)} (${counts[b.dataset.f]})`;
+  });
+
+  if (tradeView.filter === "open") rows = rows.filter(r => r.open);
+  if (tradeView.filter === "closed") rows = rows.filter(r => !r.open);
+  const s = tradeView.search.trim().toUpperCase();
+  if (s) rows = rows.filter(r => r.t.ticker.includes(s));
+
+  const col = TRADE_COLUMNS.find(c => c.key === tradeView.sort) || TRADE_COLUMNS[2];
+  rows.sort((a, b) => {
+    const x = col.sort(a), y = col.sort(b);
+    return (x < y ? -1 : x > y ? 1 : 0) * tradeView.dir || b.t.id - a.t.id;
+  });
+
+  if (!rows.length) {
+    box.innerHTML = `<div class="empty">No trades match.</div>`;
+    return;
+  }
+
+  const cell = r => {
+    const t = r.t, e = t.econ;
+    const statusPill = { open: `<span class="pill clear">Open</span>`,
+                         part: `<span class="pill slight">Part sold</span>`,
+                         closed: `<span class="pill tie">Closed</span>` }[r.status];
+    return `<tr class="trade-row" data-open-trade="${t.id}" tabindex="0"
+               aria-label="${esc(t.ticker)} trade, open details">
+      <td>${statusPill}</td>
+      <td class="mono"><strong>${esc(t.ticker)}</strong>${t.note ? ` <span class="has-note" title="${esc(t.note)}">&#9998;</span>` : ""}</td>
+      <td class="mono">${esc(r.opened)}</td>
+      <td class="mono">${r.closed ? esc(r.closed) : "&mdash;"}</td>
+      <td class="num">${daysText(r.held)}</td>
+      <td class="num">${r.status === "part" ? `${shareText(e.qty_open)}/` : ""}${shareText(e.qty_bought)}</td>
+      <td class="num">${num(r.avgCost, 2)}</td>
+      <td class="num">${r.exitOrMark == null ? "&mdash;" : num(r.exitOrMark, 2)}${
+        r.markLabel ? `<div class="cell-note">${esc(r.markLabel)}</div>` : ""}</td>
+      <td class="num">${num(r.invested)}</td>
+      <td class="num ${tone(r.pnl)}">${r.pnl == null ? "&mdash;" : signed(r.pnl)}${
+        r.open && r.pnl != null ? `<div class="cell-note">incl. unrealised</div>` : ""}</td>
+      <td class="num ${tone(r.ret)}">${r.ret == null ? "&mdash;" : signed(r.ret) + "%"}</td>
+      <td>${t.recommendation_id
+        ? `<span class="mono">#${t.recommendation_id}</span>${r.rank ? ` <span class="badge ${
+            r.rank === 1 ? "best" : r.rank === r.of ? "worst" : "mid"}">${r.rank}/${r.of}</span>` : ""}`
+        : `<span class="flat">&mdash;</span>`}</td>
+    </tr>`;
+  };
+
+  // Totals per currency: adding dollars to euros produces a number that means
+  // nothing, so a mixed list gets one footer row per currency.
+  const byCcy = {};
+  rows.forEach(r => {
+    const c = r.t.currency || "?";
+    const g = byCcy[c] || (byCcy[c] = { n: 0, invested: 0, pnl: 0, priced: true });
+    g.n += 1;
+    g.invested += r.invested;
+    if (r.pnl == null) g.priced = false; else g.pnl += r.pnl;
+  });
+  const foot = Object.entries(byCcy).map(([c, g]) => `<tr>
+      <td colspan="8"><strong>${g.n} trade${g.n === 1 ? "" : "s"}</strong>${
+        Object.keys(byCcy).length > 1 || c !== "?" ? ` &middot; ${esc(c)}` : ""}</td>
+      <td class="num"><strong>${num(g.invested)}</strong></td>
+      <td class="num ${g.priced ? tone(g.pnl) : ""}"><strong>${g.priced ? signed(g.pnl) : "&mdash;"}</strong>${
+        g.priced ? "" : `<div class="cell-note">an open trade has no price</div>`}</td>
+      <td class="num ${g.priced ? tone(g.pnl) : ""}"><strong>${
+        g.priced && g.invested ? signed((100 * g.pnl) / g.invested) + "%" : "&mdash;"}</strong></td>
+      <td></td></tr>`).join("");
+
+  box.innerHTML = `<div class="table-wrap trade-table"><table>
+    <thead><tr>${TRADE_COLUMNS.map(c => `<th class="${c.num ? "num" : ""}">
+      <button type="button" class="sort ${tradeView.sort === c.key ? "on" : ""}" data-sort="${c.key}">${c.label}${
+        tradeView.sort === c.key ? (tradeView.dir < 0 ? " &darr;" : " &uarr;") : ""}</button></th>`).join("")}</tr></thead>
+    <tbody>${rows.map(cell).join("")}</tbody>
+    <tfoot>${foot}</tfoot>
+  </table></div>
+  <p class="sub">Click a trade for its buys, sales and grading. Return is P&amp;L over
+    everything invested in that trade; open trades are marked to the latest price.</p>`;
+
+  $$("#trades-list [data-sort]").forEach(b => b.onclick = () => {
+    if (tradeView.sort === b.dataset.sort) tradeView.dir *= -1;
+    else { tradeView.sort = b.dataset.sort; tradeView.dir = ["ticker", "status"].includes(b.dataset.sort) ? 1 : -1; }
+    renderTradeList(Object.values(state.tradesById));
+  });
+  $$("#trades-list [data-open-trade]").forEach(tr => {
+    const go = () => { location.hash = `#trade/${tr.dataset.openTrade}`; };
+    tr.onclick = go;
+    tr.onkeydown = e => { if (e.key === "Enter") go(); };
+  });
+}
+
+$$("#trade-filter button").forEach(b => b.onclick = () => {
+  tradeView.filter = b.dataset.f;
+  renderTradeList(Object.values(state.tradesById || {}));
+});
+$("#trade-search").addEventListener("input", e => {
+  tradeView.search = e.target.value;
+  renderTradeList(Object.values(state.tradesById || {}));
+});
+
+/* ------------------------------------------------------------- corrections */
+
+/** Turn one buy or sale row into inputs, in place.
+ *
+ *  In place rather than a dialog because a correction is usually one number,
+ *  and the row around it -- the other packages, the totals -- is the context
+ *  needed to get it right. Only one row edits at a time; opening another puts
+ *  the first back. */
+function editEntryRow(btn) {
+  const [kind, id] = btn.dataset.editEntry.split(":");
+  const trade = state.tradesById[+btn.dataset.trade];
+  const list = kind === "lot" ? trade.lots : trade.exits;
+  const entry = list.find(x => x.id === +id);
+  if (!entry) return;
+
+  if ($("tr.editing")) {
+    toast("Save or cancel the row you are already editing first.", true);
+    return;
+  }
+
+  const tr = btn.closest("tr");
+  tr.classList.add("editing");
+  const date = kind === "lot" ? entry.lot_date : entry.exit_date;
+  tr.innerHTML = `
+    <td><input type="date" data-f="date" value="${esc(date)}" max="${today()}"></td>
+    <td><span class="txn ${kind === "lot" ? "buy" : "sell"}">${kind === "lot" ? "Buy" : "Sell"}</span></td>
+    <td class="num"><input type="number" data-f="qty" step="any" min="0" value="${entry.qty}"></td>
+    <td class="num"><input type="number" data-f="price" step="any" min="0" value="${entry.price}"></td>
+    <td class="num"><input type="number" data-f="fee" step="any" min="0" value="${entry.fee || 0}"></td>
+    <td class="num edit-preview"></td>
+    <td class="num"></td>
+    <td class="num edit-actions">
+      <button class="tiny primary" data-save>Save</button>
+      <button class="tiny" data-cancel>Cancel</button>
+    </td>`;
+
+  const read = () => {
+    const v = f => $(`[data-f=${f}]`, tr).value.replace(",", ".");
+    return { date: $("[data-f=date]", tr).value, qty: Number(v("qty")),
+             price: Number(v("price")), fee: Number(v("fee")) || 0 };
+  };
+  const preview = () => {
+    const r = read();
+    const val = kind === "lot" ? r.qty * r.price + r.fee : r.qty * r.price - r.fee;
+    $(".edit-preview", tr).innerHTML = r.qty > 0 && r.price > 0 ? num(val) : "&mdash;";
+  };
+  $$("input", tr).forEach(i => {
+    i.addEventListener("input", preview);
+    i.addEventListener("keydown", e => {
+      if (e.key === "Enter") $("[data-save]", tr).click();
+      if (e.key === "Escape") $("[data-cancel]", tr).click();
+    });
+  });
+  preview();
+  $("[data-f=price]", tr).focus();
+
+  $("[data-cancel]", tr).onclick = () => loadTrades();
+  $("[data-save]", tr).onclick = async () => {
+    const r = read();
+    if (!(r.qty > 0) || !(r.price > 0)) { toast("Shares and price must be above zero.", true); return; }
+    if (r.date > today()) { toast("That date is in the future.", true); return; }
+    const save = $("[data-save]", tr);
+    save.disabled = true;
+    try {
+      const t = await api(`/api/${kind === "lot" ? "lots" : "exits"}/${id}`,
+                          { method: "PATCH", body: r });
+      toast(t.status === "closed" && t.outcome && t.outcome.verdict
+        ? `Saved. Re-graded: ${t.outcome.verdict}`
+        : `Saved ${t.ticker}. Totals and P&L recalculated.`);
+      loadTrades();
+    } catch (e) {
+      toast(e.message, true);
+      save.disabled = false;
+    }
+  };
+}
+
+let tradeEditRecs = [];
+
+async function openTradeEdit(tradeId) {
+  const t = state.tradesById[tradeId];
+  if (!t) return;
+  try {
+    tradeEditRecs = (await api("/api/recommendations")).recommendations;
+  } catch { tradeEditRecs = []; }
+  const dlg = $("#trade-dialog");
+  dlg.dataset.tradeId = tradeId;
+  $("#te-title").textContent = `Edit ${t.ticker} trade`;
+  $("#te-ticker").value = t.ticker;
+  $("#te-note").value = t.note || "";
+  paintTradeRecs(t.recommendation_id);
+  dlg.showModal();
+  setTimeout(() => $("#te-ticker").focus(), 30);
+}
+
+/** Same eligibility as logging a trade: the ticker must be a candidate of the
+ *  call, and the call must be scored on or before the first buy. */
+function paintTradeRecs(keep) {
+  const t = state.tradesById[+$("#trade-dialog").dataset.tradeId];
+  const ticker = $("#te-ticker").value.trim().toUpperCase();
+  const sel = $("#te-rec");
+  const eligible = tradeEditRecs
+    .filter(r => r.tickers.includes(ticker) && r.as_of <= t.entry_date)
+    .sort((a, b) => b.as_of.localeCompare(a.as_of) || b.id - a.id);
+  sel.innerHTML = `<option value="0">Don't grade &mdash; P&amp;L only</option>` +
+    eligible.map(r => `<option value="${r.id}">#${r.id} &middot; close ${esc(r.as_of)}
+      &middot; pick ${esc(r.pick)}${r.pick === ticker ? " (following it)" : " (overriding it)"}</option>`).join("");
+  // `chosen` is what the user intends; the select only shows the nearest valid
+  // option. Writing the fallback back into `chosen` meant a ticker typo that
+  // was then corrected left the trade on "Don't grade" -- and Save would have
+  // quietly unlinked it. Only an explicit pick (the change event) moves it.
+  if (keep !== undefined) sel.dataset.chosen = String(keep || 0);
+  const wanted = sel.dataset.chosen || "0";
+  sel.value = [...sel.options].some(o => o.value === wanted) ? wanted : "0";
+  const lost = wanted && wanted !== "0" && sel.value === "0";
+  $("#te-rec-note").innerHTML = lost
+    ? `Recommendation #${esc(wanted)} cannot grade ${esc(ticker || "this ticker")} &mdash;
+       it was not one of its candidates, or was scored after the first buy on
+       ${esc(t.entry_date)}. Saving will grade this trade against the one chosen here.`
+    : "";
+}
+
+$("#te-ticker").addEventListener("input", () => paintTradeRecs());
+$("#te-rec").addEventListener("change", e => { e.target.dataset.chosen = e.target.value; });
+$("#te-cancel").onclick = () => $("#trade-dialog").close();
+$("#te-save").onclick = async () => {
+  const id = +$("#trade-dialog").dataset.tradeId;
+  const ticker = $("#te-ticker").value.trim().toUpperCase();
+  if (!ticker) { toast("Enter a ticker.", true); return; }
+  const btn = $("#te-save");
+  btn.disabled = true;
+  try {
+    const t = await api(`/api/trades/${id}`, {
+      method: "PATCH",
+      body: { ticker, recommendation_id: Number($("#te-rec").value),
+              note: $("#te-note").value },
+    });
+    $("#trade-dialog").close();
+    toast(t.status === "closed" && t.outcome && t.outcome.verdict
+      ? `Saved. Re-graded: ${t.outcome.verdict}` : `Saved ${t.ticker}.`);
+    loadTrades();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+const shareText = q => num(q, q % 1 ? 4 : 0);
+
+/** Every buy and sale of one trade in a single table, in the order the cost
+ *  basis walk applies them (buys before sales on the same day), with the shares
+ *  held after each. One table rather than a Bought table and a Sold table: two
+ *  tables sized their columns independently, so shares and prices did not line
+ *  up, and the running holding -- the thing that makes a history make sense --
+ *  had nowhere to go. */
+function ledgerTable(t) {
+  const lots = t.lots || [], exits = t.exits || [], e = t.econ;
+  // Rounded to 6 places exactly as the server rounds its totals. Without it,
+  // 17 x 569.685 + 1 came out as 9685.644999..., showing 9,685.64 on the row
+  // and 9,685.65 in the summary above it -- one amount, two figures.
+  const r6 = v => Math.round(v * 1e6) / 1e6;
+  const rows = [
+    ...lots.map(l => ({ kind: "lot", id: l.id, date: l.lot_date, qty: l.qty, price: l.price,
+                        fee: l.fee || 0, amount: r6(l.qty * l.price + (l.fee || 0)), rank: 0 })),
+    ...exits.map(x => ({ kind: "exit", id: x.id, date: x.exit_date, qty: x.qty, price: x.price,
+                         fee: x.fee || 0, amount: r6(x.qty * x.price - (x.fee || 0)), rank: 1 })),
+  ].sort((a, b) => a.date.localeCompare(b.date) || a.rank - b.rank || a.id - b.id);
+  let held = 0;
+  rows.forEach(r => { held += r.kind === "lot" ? r.qty : -r.qty; r.held = held; });
+
+  const summary = `<div class="ledger-summary">
+    <span><span class="k">Bought</span> <strong class="mono">${shareText(e.qty_bought)}</strong> sh
+      &middot; avg <strong class="mono">${num(e.avg_buy_price, 4)}</strong>
+      &middot; invested <strong class="mono">${num(e.total_buy_cost)}</strong></span>
+    ${e.qty_sold ? `<span><span class="k">Sold</span> <strong class="mono">${shareText(e.qty_sold)}</strong> sh
+      &middot; avg <strong class="mono">${num(e.avg_exit_price, 4)}</strong>
+      &middot; proceeds <strong class="mono">${num(e.proceeds)}</strong></span>` : ""}
+    ${e.qty_open ? `<span><span class="k">Held</span> <strong class="mono">${shareText(e.qty_open)}</strong> sh
+      &middot; avg cost <strong class="mono">${num(e.open_avg_cost, 4)}</strong></span>` : ""}
+  </div>`;
+
+  return `${summary}<div class="table-wrap ledger"><table>
+    <thead><tr><th>Date</th><th>Type</th><th class="num">Shares</th><th class="num">Price</th>
+      <th class="num">Fee</th><th class="num">Amount</th><th class="num">Held after</th><th></th></tr></thead>
+    <tbody>${rows.map(r => `<tr>
+      <td class="mono">${esc(r.date)}</td>
+      <td><span class="txn ${r.kind === "lot" ? "buy" : "sell"}">${r.kind === "lot" ? "Buy" : "Sell"}</span></td>
+      <td class="num">${shareText(r.qty)}</td>
+      <td class="num">${num(r.price, 4)}</td>
+      <td class="num">${r.fee ? num(r.fee) : "&mdash;"}</td>
+      <td class="num">${r.kind === "lot" ? "&minus;" : "+"}${num(r.amount)}</td>
+      <td class="num">${shareText(r.held)}</td>
+      <td class="num row-actions">
+        <button class="tiny" data-edit-entry="${r.kind}:${r.id}" data-trade="${t.id}"
+                title="Correct this ${r.kind === "lot" ? "buy" : "sale"}">&#9998;</button>${
+        r.kind === "exit"
+          ? `<button class="tiny danger" data-del-exit="${r.id}" title="Undo this sale">&times;</button>`
+          : lots.length > 1
+            ? `<button class="tiny danger" data-del-lot="${r.id}" title="Remove this buy">&times;</button>`
+            : ""}</td>
+    </tr>`).join("")}</tbody></table></div>`;
 }
 
 function openTradeCard(t) {
@@ -1078,10 +1538,11 @@ function openTradeCard(t) {
         ${t.followed_pick ? "followed pick" : "overrode pick"} &middot; rec #${t.recommendation_id}</span>` : ""}
       <span class="spacer"></span>
       <span id="mtm-${t.id}" class="flat">&hellip;</span>
+      <button class="tiny" data-edit-trade="${t.id}" title="Correct ticker, recommendation or note">Edit</button>
     </div>
     <div class="trade-body">
-      ${lotsTable(t, true)}
-      ${exitsTable(t, true)}
+      ${t.note ? `<p class="sub trade-note">${esc(t.note)}</p>` : ""}
+      ${ledgerTable(t)}
       <div class="actions" style="margin-top:10px">
         <button class="tiny" data-buy-more="${t.id}" data-ticker="${esc(t.ticker)}">
           + Buy more ${esc(t.ticker)}</button>
@@ -1155,11 +1616,12 @@ function closedTradeCard(t) {
       <span class="mono">${shareText(t.qty)} sh, ${num(t.entry_price, 4)} &rarr; ${num(t.exit_price, 4)}${
         (t.exits || []).length > 1 ? ` in ${t.exits.length} sales` : ""}</span>
       <span class="sub" style="margin:0">${esc(t.entry_date)} &rarr; ${esc(t.exit_date)}
-        (${o.held_days ?? "?"} days)</span>
+        (${daysText(dayDiff(t.entry_date, t.exit_date))})</span>
       ${overrode ? `<span class="pill tie">overrode pick</span>` : ""}
       <span class="spacer"></span>
       <span>${pct(o.traded_return_pct)}${
         o.pnl !== null && o.pnl !== undefined ? ` <span class="flat mono">${num(o.pnl)}</span>` : ""}</span>
+      <button class="tiny" data-edit-trade="${t.id}" title="Correct ticker, recommendation or note">Edit</button>
       <button class="tiny danger" data-del-trade="${t.id}">Delete</button>
     </div>
     <div class="trade-body">
@@ -1167,8 +1629,8 @@ function closedTradeCard(t) {
         <strong>Your decision:</strong> ${esc(o.decision_verdict)}</div>` : ""}
       <div class="callout ${overrode ? "" : modelCls}">
         ${overrode ? "<strong>The model:</strong> " : ""}${esc(o.verdict || "No verdict recorded.")}</div>
-      ${lotsTable(t, false)}
-      ${exitsTable(t, false)}
+      ${t.note ? `<p class="sub trade-note">${esc(t.note)}</p>` : ""}
+      ${ledgerTable(t)}
       ${o.graded ? gradeTable(o, false) : ""}
     </div></div>`;
 }
@@ -1288,6 +1750,298 @@ async function reviewSince(id) {
   } catch { /* leave the ellipsis */ }
 }
 
+/* ------------------------------------------------------------ performance */
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const monthLabel = m => `${MONTHS[+m.slice(5, 7) - 1]} ${m.slice(0, 4)}`;
+const shortMonth = m => MONTHS[+m.slice(5, 7) - 1];
+const signed = (v, d = 2) => (v > 0 ? "+" : "") + num(v, d);
+const tone = v => v > 0 ? "up" : v < 0 ? "down" : "flat";
+
+async function loadPerformance() {
+  const box = $("#performance");
+  let d;
+  try {
+    d = await api("/api/performance");
+  } catch (e) {
+    box.innerHTML = `<div class="panel"><div class="err">${esc(e.message)}</div></div>`;
+    return;
+  }
+  const codes = Object.keys(d.currencies);
+  if (!codes.length) {
+    box.innerHTML = `<div class="panel"><div class="empty">No trades logged yet.
+      Use <strong>+ Log a trade</strong> on the Trades tab.</div></div>`;
+    return;
+  }
+  box.innerHTML = codes.map(c => perfBlock(c, d.currencies[c], codes.length > 1)).join("");
+  $$("#performance .perf-chart").forEach(wirePerfTips);
+}
+
+/** Ticks for a money axis: about five steps, always including zero. */
+function moneyTicks(lo, hi) {
+  lo = Math.min(0, lo); hi = Math.max(0, hi);
+  if (hi - lo < 1e-9) hi = lo + 1;
+  const raw = (hi - lo) / 4;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw);
+  const a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step;
+  const out = [];
+  for (let v = a; v <= b + step * 1e-6; v += step) out.push(Math.round(v * 1e6) / 1e6);
+  return out;
+}
+
+/** A bar with its 4px rounded end away from the baseline, square at zero. */
+function barPath(x, w, yZero, yVal) {
+  const h = Math.abs(yVal - yZero);
+  if (h < 0.5) return "";
+  const r = Math.min(4, w / 2, h);
+  if (yVal < yZero) {             // grows upward
+    return `M${x} ${yZero} V${yVal + r} Q${x} ${yVal} ${x + r} ${yVal}
+            H${x + w - r} Q${x + w} ${yVal} ${x + w} ${yVal + r} V${yZero} Z`;
+  }
+  return `M${x} ${yZero} V${yVal - r} Q${x} ${yVal} ${x + r} ${yVal}
+          H${x + w - r} Q${x + w} ${yVal} ${x + w} ${yVal - r} V${yZero} Z`;
+}
+
+function perfBlock(ccy, c, multi) {
+  const t = c.totals;
+  const tiles = `
+    <div class="stats">
+      <div class="stat"><div class="k">Realised P&amp;L</div>
+        <div class="v ${tone(t.realised_pnl)}">${signed(t.realised_pnl)}</div>
+        <div class="n">${esc(ccy)} since ${esc(c.first_trade)}</div></div>
+      <div class="stat"><div class="k">Capital traded</div>
+        <div class="v">${num(t.capital_bought)}</div>
+        <div class="n">${esc(ccy)} spent on buys, fees included${t.capital_open > 0
+          ? ` &middot; ${num(t.capital_open)} still in open positions` : ""}</div></div>
+      <div class="stat"><div class="k">Return on capital traded</div>
+        <div class="v ${tone(t.return_pct)}">${t.return_pct == null ? "&mdash;" : signed(t.return_pct) + "%"}</div>
+        <div class="n">P&amp;L over the cost of shares sold</div></div>
+      <div class="stat"><div class="k">Trades closed</div>
+        <div class="v">${t.closed}</div>
+        <div class="n">${t.wins} won &middot; ${t.losses} lost${t.open ? ` &middot; ${t.open} still open` : ""}</div></div>
+      <div class="stat"><div class="k">Win rate</div>
+        <div class="v">${t.win_rate_pct == null ? "&mdash;" : num(t.win_rate_pct, 0) + "%"}</div>
+        <div class="n">closed trades that made money</div></div>
+      <div class="stat"><div class="k">Average trade</div>
+        <div class="v ${tone(t.avg_trade_return_pct)}">${t.avg_trade_return_pct == null ? "&mdash;" : signed(t.avg_trade_return_pct) + "%"}</div>
+        <div class="n">each trade weighted equally</div></div>
+      ${t.open ? `<div class="stat"><div class="k">Unrealised</div>
+        <div class="v ${tone(t.unrealised_pnl)}">${t.unrealised_pnl == null ? "&mdash;" : signed(t.unrealised_pnl)}</div>
+        <div class="n">${t.unrealised_pnl == null ? "no live price for every open position" : "open positions at the latest price"}</div></div>`
+      : `<div class="stat"><div class="k">Fees paid</div>
+        <div class="v">${num(t.fees)}</div>
+        <div class="n">already inside the P&amp;L</div></div>`}
+    </div>`;
+
+  const few = t.closed < 20;
+  return `<section class="panel perf">
+    <div class="panel-head">
+      <h2>Performance${multi ? ` &middot; ${esc(ccy)}` : ""}</h2>
+      <p class="sub">Every figure is <strong>realised</strong> and dated by the
+        sale that banked it, so a position bought in August and sold in
+        September counts in September. Return is profit over the cost of the
+        shares sold &mdash; not an account return, since the app does not know
+        how much capital sat idle.${few ? ` With ${t.closed} closed
+        trade${t.closed === 1 ? "" : "s"}, treat these as a record rather than
+        evidence.` : ""}</p>
+    </div>
+    ${tiles}
+    <div class="perf-grid">
+      <div class="perf-card">
+        <h3>Realised P&amp;L by month</h3>
+        ${pnlBars(c.monthly, ccy)}
+      </div>
+      <div class="perf-card">
+        <h3>Trades by month</h3>
+        ${countBars(c.monthly)}
+      </div>
+    </div>
+    <div class="perf-card">
+      <h3>Since the first trade</h3>
+      ${cumulativeLine(c.cumulative, ccy)}
+    </div>
+    ${perfTable(c.monthly, ccy)}
+  </section>`;
+}
+
+function pnlBars(monthly, ccy) {
+  const W = 380, H = 210, L = 52, R = 10, T = 16, B = 26;
+  const ticks = moneyTicks(Math.min(...monthly.map(m => m.pnl)),
+                           Math.max(...monthly.map(m => m.pnl)));
+  const lo = ticks[0], hi = ticks[ticks.length - 1];
+  const y = v => T + (H - T - B) * (hi - v) / (hi - lo);
+  const n = monthly.length, slot = (W - L - R) / n;
+  const bw = Math.max(6, Math.min(44, slot * 0.6));
+  const labelEvery = Math.ceil(n / 8);
+  const bars = monthly.map((m, i) => {
+    const x = L + i * slot + (slot - bw) / 2;
+    const tip = `<div class="tip-date">${esc(monthLabel(m.month))}</div>
+      <div class="tip-kv"><span>Realised</span><span class="mono ${tone(m.pnl)}">${signed(m.pnl)} ${esc(ccy)}</span></div>
+      <div class="tip-kv"><span>Return</span><span class="mono">${m.return_pct == null ? "&mdash;" : signed(m.return_pct) + "%"}</span></div>
+      <div class="tip-kv"><span>Sales</span><span class="mono">${m.sales}</span></div>`;
+    return `<path d="${barPath(x, bw, y(0), y(m.pnl))}" fill="var(--${m.pnl >= 0 ? "up" : "down"})"/>
+      ${n <= 8 && m.sales ? `<text x="${x + bw / 2}" y="${m.pnl >= 0 ? y(m.pnl) - 5 : y(m.pnl) + 12}"
+        text-anchor="middle" class="bar-label">${signed(m.pnl, 0)}</text>` : ""}
+      ${i % labelEvery === 0 ? `<text x="${x + bw / 2}" y="${H - 8}" text-anchor="middle" class="ax">${esc(shortMonth(m.month))}</text>` : ""}
+      <rect x="${L + i * slot}" y="${T}" width="${slot}" height="${H - T - B}" fill="transparent"
+            class="tip-hit" data-tip="${esc(tip)}" data-cx="${x + bw / 2}"/>`;
+  }).join("");
+  return chartShell(W, H, `
+    ${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"
+        stroke="${v === 0 ? "var(--axis)" : "var(--grid)"}" vector-effect="non-scaling-stroke"/>
+      <text x="${L - 6}" y="${y(v) + 3.5}" text-anchor="end" class="ax">${num(v, 0)}</text>`).join("")}
+    ${bars}`, `Realised profit and loss per month in ${ccy}. Values are in the table below.`);
+}
+
+function countBars(monthly) {
+  const W = 380, H = 210, L = 30, R = 10, T = 16, B = 26;
+  const top = Math.max(1, ...monthly.map(m => Math.max(m.opened, m.closed)));
+  const step = top <= 5 ? 1 : Math.ceil(top / 5);
+  const hi = Math.ceil(top / step) * step;
+  const y = v => T + (H - T - B) * (hi - v) / hi;
+  const n = monthly.length, slot = (W - L - R) / n;
+  const bw = Math.max(4, Math.min(20, slot * 0.3));
+  const labelEvery = Math.ceil(n / 8);
+  const ticks = [];
+  for (let v = 0; v <= hi; v += step) ticks.push(v);
+  const bars = monthly.map((m, i) => {
+    const cx = L + i * slot + slot / 2;
+    // A 2px surface gap between the paired bars, never a border.
+    const x1 = cx - bw - 1, x2 = cx + 1;
+    const tip = `<div class="tip-date">${esc(monthLabel(m.month))}</div>
+      <div class="tip-kv"><span><span class="swatch" style="background:var(--series-1)"></span>Opened</span><span class="mono">${m.opened}</span></div>
+      <div class="tip-kv"><span><span class="swatch" style="background:var(--series-2)"></span>Closed</span><span class="mono">${m.closed}</span></div>
+      ${m.closed ? `<div class="tip-kv"><span>Won / lost</span><span class="mono">${m.wins} / ${m.losses}</span></div>` : ""}`;
+    return `<path d="${barPath(x1, bw, y(0), y(m.opened))}" fill="var(--series-1)"/>
+      <path d="${barPath(x2, bw, y(0), y(m.closed))}" fill="var(--series-2)"/>
+      ${i % labelEvery === 0 ? `<text x="${cx}" y="${H - 8}" text-anchor="middle" class="ax">${esc(shortMonth(m.month))}</text>` : ""}
+      <rect x="${L + i * slot}" y="${T}" width="${slot}" height="${H - T - B}" fill="transparent"
+            class="tip-hit" data-tip="${esc(tip)}" data-cx="${cx}"/>`;
+  }).join("");
+  return chartShell(W, H, `
+    ${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"
+        stroke="${v === 0 ? "var(--axis)" : "var(--grid)"}" vector-effect="non-scaling-stroke"/>
+      <text x="${L - 6}" y="${y(v) + 3.5}" text-anchor="end" class="ax">${v}</text>`).join("")}
+    ${bars}`, "Trades opened and closed per month. Values are in the table below.",
+    `<div class="legend"><span><i style="background:var(--series-1)"></i>Opened</span>
+       <span><i style="background:var(--series-2)"></i>Closed</span></div>`);
+}
+
+/** Running realised P&L on a real time axis, stepping at every sale.
+ *
+ *  Time-scaled rather than one step per trade, because "since the first trade"
+ *  is a claim about a period: a fortnight with no sales should look like a
+ *  fortnight, not vanish between two adjacent points. */
+function cumulativeLine(points, ccy) {
+  const W = 780, H = 230, L = 56, R = 20, T = 18, B = 28;
+  const day = s => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10));
+  const t0 = day(points[0].date), t1 = Math.max(day(points[points.length - 1].date), t0 + 864e5);
+  const x = s => L + (W - L - R) * (day(s) - t0) / (t1 - t0);
+  const ticks = moneyTicks(Math.min(...points.map(p => p.cum_pnl)),
+                           Math.max(...points.map(p => p.cum_pnl)));
+  const lo = ticks[0], hi = ticks[ticks.length - 1];
+  const y = v => T + (H - T - B) * (hi - v) / (hi - lo);
+
+  let d = `M${x(points[0].date)} ${y(points[0].cum_pnl)}`;
+  for (let i = 1; i < points.length; i++) {
+    d += ` H${x(points[i].date)} V${y(points[i].cum_pnl)}`;
+  }
+  const last = points[points.length - 1];
+
+  const marks = points.filter(p => p.events.length).map(p => {
+    const tip = `<div class="tip-date">${esc(p.date)}</div>
+      ${p.events.map(e => `<div class="tip-kv"><span class="mono">${esc(e.ticker)} &middot; ${shareText(e.qty)} sh</span>
+        <span class="mono ${tone(e.pnl)}">${signed(e.pnl)}</span></div>`).join("")}
+      <div class="tip-kv tip-total"><span>Running total</span><span class="mono ${tone(p.cum_pnl)}">${signed(p.cum_pnl)} ${esc(ccy)}</span></div>
+      ${p.cum_return_pct != null ? `<div class="tip-kv"><span>Return so far</span><span class="mono">${signed(p.cum_return_pct)}%</span></div>` : ""}`;
+    return `<circle cx="${x(p.date)}" cy="${y(p.cum_pnl)}" r="4" fill="var(--series-1)"
+        stroke="var(--surface)" stroke-width="2"/>
+      <circle cx="${x(p.date)}" cy="${y(p.cum_pnl)}" r="13" fill="transparent"
+        class="tip-hit" data-tip="${esc(tip)}" data-cx="${x(p.date)}"/>`;
+  }).join("");
+
+  // Month boundaries as x labels, so the axis reads as a calendar.
+  const monthTicks = [];
+  const first = new Date(t0);
+  let cursor = Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 1);
+  while (cursor <= t1) { monthTicks.push(cursor); cursor = Date.UTC(new Date(cursor).getUTCFullYear(), new Date(cursor).getUTCMonth() + 1, 1); }
+  const xt = ts => L + (W - L - R) * (ts - t0) / (t1 - t0);
+
+  return chartShell(W, H, `
+    ${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"
+        stroke="${v === 0 ? "var(--axis)" : "var(--grid)"}" vector-effect="non-scaling-stroke"/>
+      <text x="${L - 6}" y="${y(v) + 3.5}" text-anchor="end" class="ax">${num(v, 0)}</text>`).join("")}
+    ${monthTicks.map(ts => `<line x1="${xt(ts)}" x2="${xt(ts)}" y1="${T}" y2="${H - B}"
+        stroke="var(--grid)" vector-effect="non-scaling-stroke"/>
+      <text x="${xt(ts) + 4}" y="${H - 9}" class="ax">${esc(MONTHS[new Date(ts).getUTCMonth()])} 1</text>`).join("")}
+    <text x="${L}" y="${H - 9}" class="ax">${esc(points[0].date.slice(5))}</text>
+    <text x="${W - R}" y="${H - 9}" text-anchor="end" class="ax">${esc(last.date.slice(5))}</text>
+    <path d="${d}" fill="none" stroke="var(--series-1)" stroke-width="2"
+          stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+    ${marks}
+    <text x="${W - R}" y="${y(last.cum_pnl) - 8}" text-anchor="end" class="end-total">${signed(last.cum_pnl)} ${esc(ccy)}</text>`,
+    `Cumulative realised profit in ${ccy} from ${points[0].date} to ${last.date}. Values are in the table below.`);
+}
+
+function chartShell(W, H, inner, label, legend = "") {
+  return `<div class="perf-chart" tabindex="0" role="img" aria-label="${esc(label)}">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">${inner}</svg>
+    <div class="chart-tip" hidden></div>
+  </div>${legend}`;
+}
+
+/** One tooltip per chart. Hover and keyboard reach the same content, and every
+ *  value in it is also in the table, so the tooltip never gates a number. */
+function wirePerfTips(wrap) {
+  const svg = $("svg", wrap), tip = $(".chart-tip", wrap);
+  const hits = $$(".tip-hit", svg);
+  const W = svg.viewBox.baseVal.width;
+  let at = -1;
+  const show = i => {
+    const h = hits[i];
+    if (!h) return;
+    at = i;
+    hits.forEach(o => o.classList.toggle("on", o === h));
+    tip.innerHTML = h.dataset.tip;
+    tip.hidden = false;
+    const frac = (+h.dataset.cx) / W;
+    tip.style.left = frac > 0.6 ? "auto" : `${Math.max(2, frac * 100 + 2)}%`;
+    tip.style.right = frac > 0.6 ? `${Math.max(2, (1 - frac) * 100 + 2)}%` : "auto";
+  };
+  const hide = () => { tip.hidden = true; at = -1; hits.forEach(o => o.classList.remove("on")); };
+  hits.forEach((h, i) => {
+    h.addEventListener("pointerenter", () => show(i));
+    h.addEventListener("pointerleave", hide);
+  });
+  wrap.addEventListener("keydown", e => {
+    if (e.key === "ArrowRight") { show(Math.min(hits.length - 1, at + 1)); e.preventDefault(); }
+    if (e.key === "ArrowLeft") { show(Math.max(0, at < 0 ? hits.length - 1 : at - 1)); e.preventDefault(); }
+    if (e.key === "Escape") hide();
+  });
+  wrap.addEventListener("blur", hide);
+}
+
+function perfTable(monthly, ccy) {
+  const rows = [...monthly].reverse();
+  return `<div class="table-wrap perf-table"><table>
+    <thead><tr><th>Month</th><th class="num">Opened</th><th class="num">Closed</th>
+      <th class="num">Won / lost</th><th class="num">Realised (${esc(ccy)})</th>
+      <th class="num">Return</th><th class="num">Running total</th>
+      <th class="num">Running return</th></tr></thead>
+    <tbody>${rows.map(m => `<tr${m.sales || m.opened ? "" : ' class="quiet"'}>
+      <td>${esc(monthLabel(m.month))}</td>
+      <td class="num">${m.opened}</td>
+      <td class="num">${m.closed}</td>
+      <td class="num">${m.closed ? `${m.wins} / ${m.losses}` : "&mdash;"}</td>
+      <td class="num ${tone(m.pnl)}">${m.sales ? signed(m.pnl) : "&mdash;"}</td>
+      <td class="num">${m.return_pct == null ? "&mdash;" : signed(m.return_pct) + "%"}</td>
+      <td class="num ${tone(m.cum_pnl)}">${signed(m.cum_pnl)}</td>
+      <td class="num">${m.cum_return_pct == null ? "&mdash;" : signed(m.cum_return_pct) + "%"}</td>
+    </tr>`).join("")}</tbody></table></div>`;
+}
+
 /* ----------------------------------------------------------- track record */
 
 async function loadScoreboard() {
@@ -1361,3 +2115,9 @@ api("/api/config")
   .then(cfg => { if (cfg.compare_sessions) COMPARE_SESSIONS = cfg.compare_sessions; })
   .catch(() => { /* the built-in default is a fine fallback */ })
   .finally(() => loadHotlist().catch(e => toast(e.message, true)));
+
+// Opened on a link to one trade (#trade/<id>), or refreshed while viewing it.
+if (tradeIdFromHash() || location.hash === "#trades") {
+  showTradesTab();
+  loadTrades().catch(e => toast(e.message, true));
+}

@@ -393,6 +393,169 @@ check("re-running the exit migration does not duplicate sales",
       len(db.get_trade(oc["id"])["exits"]) == n_before)
 
 
+# -------------------------------------------------------------- editing
+
+print("\nEDITING")
+
+from app import main as app_main                                # noqa: E402
+
+eid = db.open_trade(None, "EDT", [lot("2026-03-02", 10, 50.0, fee=1.0)])
+db.add_exit(eid, "2026-03-09", 10, 55.0, 1.0)
+closed_t = app_main._grade_if_closed(eid)
+check("a closed, unlinked trade gets a P&L-only grade (%.2f)" % closed_t["outcome"]["pnl"],
+      closed_t["status"] == "closed" and abs(closed_t["outcome"]["pnl"] - 48.0) < 1e-6)
+
+# Correct a typo in the sale price: 55 was really 56.
+exit_id = closed_t["exits"][0]["id"]
+fixed = db.update_entry("trade_exits", exit_id, {"price": 56.0})
+check("editing a sale re-derives the summary", abs(fixed["exit_price"] - (10 * 56 - 1) / 10) < 1e-9)
+check("and drops the stale grade rather than keeping the typo's result",
+      fixed["outcome"] is None)
+regraded = app_main._grade_if_closed(eid)
+check("re-grading after the edit reflects the corrected price (%.2f)" % regraded["outcome"]["pnl"],
+      abs(regraded["outcome"]["pnl"] - 58.0) < 1e-6)
+
+lot_id = regraded["lots"][0]["id"]
+db.update_entry("trade_lots", lot_id, {"qty": 12})
+reopened = app_main._grade_if_closed(eid)
+check("raising a buy's quantity above what was sold reopens the position",
+      reopened["status"] == "open" and reopened["econ"]["qty_open"] == 2.0
+      and reopened["outcome"] is None)
+
+before = db.get_trade(eid)
+try:
+    db.update_entry("trade_lots", lot_id, {"qty": 4})
+    check("shrinking a buy below what was later sold is refused", False)
+except ValueError as exc:
+    check("shrinking a buy below what was later sold is refused", True, str(exc))
+check("and a refused edit changes nothing",
+      db.get_trade(eid)["lots"][0]["qty"] == before["lots"][0]["qty"]
+      and db.get_trade(eid)["qty"] == before["qty"])
+
+try:
+    db.update_entry("trade_lots", lot_id, {"lot_date": "2026-03-20"})
+    check("moving a buy to after its own sale is refused", False)
+except ValueError as exc:
+    check("moving a buy to after its own sale is refused", True, str(exc))
+
+try:
+    db.update_entry("trade_exits", exit_id, {"exit_date": "2026-03-01"})
+    check("moving a sale to before the buy is refused", False)
+except ValueError as exc:
+    check("moving a sale to before the buy is refused", True)
+
+check("fields outside the editable set are ignored",
+      db.update_entry("trade_lots", lot_id, {"trade_id": 999999, "qty": 12})["id"] == eid)
+
+twolot = db.open_trade(None, "TWO", [lot("2026-04-01", 5, 10.0), lot("2026-04-02", 5, 11.0)])
+db.add_exit(twolot, "2026-04-10", 8, 12.0)
+first_lot = db.get_trade(twolot)["lots"][0]["id"]
+try:
+    db.delete_lot(first_lot)
+    check("deleting a buy whose shares were later sold is refused", False)
+except ValueError as exc:
+    check("deleting a buy whose shares were later sold is refused", True, str(exc))
+
+renamed = db.update_trade(eid, {"ticker": "EDX", "note": "fixed ticker"})
+check("a trade's ticker and note can be corrected",
+      renamed["ticker"] == "EDX" and renamed["note"] == "fixed ticker")
+check("position.first_oversell names the offending sale",
+      position.first_oversell(
+          [lot("2026-01-01", 3, 1.0)],
+          [{"exit_date": "2026-01-02", "qty": 5, "price": 1.0, "fee": 0.0, "id": 1}])
+      == ("2026-01-02", 5, 3.0))
+
+
+# ------------------------------------------------------------ performance
+
+print("\nPERFORMANCE")
+
+from app import performance                                     # noqa: E402
+
+
+def sale(date, qty, price, fee=0.0, i=1):
+    return {"exit_date": date, "qty": qty, "price": price, "fee": fee, "id": i}
+
+
+# Per-sale realisations come from the same walk as the totals, so they must add
+# up exactly -- including across a partial sell and a buy-back.
+walk_lots = [lot("2026-01-05", 10, 100.0, fee=2.0), lot("2026-02-10", 10, 200.0)]
+walk_exits = [sale("2026-01-20", 4, 120.0, fee=1.0, i=1),
+              sale("2026-03-03", 16, 180.0, fee=1.5, i=2)]
+per_sale = position.realisations(walk_lots, walk_exits)
+walk_econ = position.economics(walk_lots, walk_exits)
+check("per-sale P&L sums to the trade's realised total",
+      abs(round(sum(s["pnl"] for s in per_sale), 4) - walk_econ["realised_pnl"]) < 1e-9)
+check("each sale carries the date it was banked",
+      [s["date"] for s in per_sale] == ["2026-01-20", "2026-03-03"])
+
+split = performance.build(
+    [{"id": 1, "ticker": "AAA", "lots": walk_lots, "exits": walk_exits}],
+    {"AAA": "USD"}, today="2026-04-15")["currencies"]["USD"]
+by_month = dict((m["month"], m) for m in split["monthly"])
+check("a position sold across two months puts each sale in its own month",
+      by_month["2026-01"]["sales"] == 1 and by_month["2026-03"]["sales"] == 1
+      and abs(by_month["2026-01"]["pnl"] - round(per_sale[0]["pnl"], 4)) < 1e-9)
+check("months with no activity are still listed, not closed up",
+      [m["month"] for m in split["monthly"]] == ["2026-01", "2026-02", "2026-03", "2026-04"]
+      and by_month["2026-02"]["sales"] == 0 and by_month["2026-04"]["pnl"] == 0.0)
+check("the trade counts as opened in its first-buy month and closed in its last-sale month",
+      by_month["2026-01"]["opened"] == 1 and by_month["2026-01"]["closed"] == 0
+      and by_month["2026-03"]["closed"] == 1)
+check("monthly return is realised P&L over the basis of the shares sold",
+      abs(by_month["2026-03"]["return_pct"]
+          - round(100 * per_sale[1]["pnl"] / per_sale[1]["basis"], 4)) < 1e-9)
+check("capital traded is every buy's cost, fees included (%.2f)" % split["totals"]["capital_bought"],
+      abs(split["totals"]["capital_bought"] - (10 * 100.0 + 2.0 + 10 * 200.0)) < 1e-9)
+check("once fully sold, capital traded equals the basis return is measured on",
+      abs(split["totals"]["capital_bought"] - split["totals"]["basis_sold"]) < 1e-6
+      and split["totals"]["capital_open"] == 0.0)
+check("cumulative P&L at the last month equals the total",
+      abs(split["monthly"][-1]["cum_pnl"] - split["totals"]["realised_pnl"]) < 1e-9)
+
+# Win or loss is judged on the whole trade: here the first sale loses, the
+# second wins by more, so the trade -- and its closing month -- is a win.
+mixed = performance.build(
+    [{"id": 2, "ticker": "BBB", "lots": [lot("2026-05-01", 10, 100.0)],
+      "exits": [sale("2026-05-10", 5, 90.0, i=1), sale("2026-06-10", 5, 130.0, i=2)]}],
+    {"BBB": "USD"}, today="2026-06-30")["currencies"]["USD"]
+mm = dict((m["month"], m) for m in mixed["monthly"])
+check("a losing sale inside a winning trade does not make the trade a loss",
+      mm["2026-05"]["pnl"] < 0 and mm["2026-06"]["wins"] == 1
+      and mm["2026-06"]["losses"] == 0 and mixed["totals"]["wins"] == 1)
+
+ccy = performance.build(
+    [{"id": 3, "ticker": "USX", "lots": [lot("2026-05-01", 1, 100.0)],
+      "exits": [sale("2026-05-02", 1, 110.0)]},
+     {"id": 4, "ticker": "EUX", "lots": [lot("2026-05-01", 1, 100.0)],
+      "exits": [sale("2026-05-02", 1, 105.0)]}],
+    {"USX": "USD", "EUX": "EUR"}, today="2026-05-31")
+check("dollars and euros are never added together",
+      sorted(ccy["currencies"]) == ["EUR", "USD"]
+      and ccy["currencies"]["USD"]["totals"]["realised_pnl"] == 10.0
+      and ccy["currencies"]["EUR"]["totals"]["realised_pnl"] == 5.0)
+
+held = [{"id": 5, "ticker": "OPN", "lots": [lot("2026-05-01", 10, 50.0)], "exits": []}]
+check("an open position reports no unrealised figure without a price",
+      performance.build(held, {"OPN": "USD"}, today="2026-05-31")
+      ["currencies"]["USD"]["totals"]["unrealised_pnl"] is None)
+check("capital still in an open position is reported separately",
+      performance.build(held, {"OPN": "USD"}, today="2026-05-31")
+      ["currencies"]["USD"]["totals"]["capital_open"] == 500.0)
+check("and marks it to market when one is given (%.2f)" %
+      performance.build(held, {"OPN": "USD"}, {"OPN": 55.0}, today="2026-05-31")
+      ["currencies"]["USD"]["totals"]["unrealised_pnl"],
+      performance.build(held, {"OPN": "USD"}, {"OPN": 55.0}, today="2026-05-31")
+      ["currencies"]["USD"]["totals"]["unrealised_pnl"] == 50.0)
+
+late = performance.build(
+    [{"id": 6, "ticker": "LTE", "lots": [lot("2026-05-01", 1, 100.0)],
+      "exits": [sale("2026-07-02", 1, 120.0)]}],
+    {"LTE": "USD"}, today="2026-05-31")["currencies"]["USD"]
+check("a sale dated after today still lands in a month instead of vanishing",
+      late["monthly"][-1]["month"] == "2026-07" and late["totals"]["realised_pnl"] == 20.0)
+
+
 # ------------------------------------------------------------ scoreboard
 
 print("\nSCOREBOARD")

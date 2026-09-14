@@ -282,13 +282,40 @@ def open_trade(recommendation_id, ticker, lots, note=None):
         return trade_id
 
 
+def _changed(conn, trade_id):
+    """After ANY change to a trade: re-derive the summary, drop the grade.
+
+    The grade is a function of the buys, the sells, the ticker and the linked
+    recommendation. Keeping a stored verdict after any of those changed would
+    leave the P&L, the rank and the decision cost describing a trade that no
+    longer exists -- correcting a typo in a sale price would silently keep the
+    typo's result. The caller re-grades if the position is still closed.
+    """
+    _recompute(conn, trade_id)
+    conn.execute("UPDATE trades SET outcome = NULL WHERE id = ?", (trade_id,))
+
+
+def _check_history(lots, exits):
+    """Refuse a buy/sell history that could not have happened."""
+    if not lots:
+        raise ValueError("A position needs at least one buy - delete the whole "
+                         "trade instead of its last one.")
+    bad = position.first_oversell(lots, exits)
+    if bad:
+        date, wanted, held = bad
+        raise ValueError(
+            "That would make the sale on %s sell %g share(s) when only %g were "
+            "held at that date. Check the dates and share counts of the buys "
+            "and sales together." % (date, wanted, held))
+
+
 def add_lot(trade_id, lot_date, qty, price, fee=0.0, note=None):
     with connect() as conn:
         conn.execute(
             "INSERT INTO trade_lots (trade_id, lot_date, qty, price, fee, note)"
             " VALUES (?, ?, ?, ?, ?, ?)",
             (trade_id, lot_date, qty, price, fee or 0.0, note))
-        _recompute(conn, trade_id)
+        _changed(conn, trade_id)
     return get_trade(trade_id)
 
 
@@ -299,18 +326,12 @@ def delete_lot(lot_id):
         if not row:
             return None
         trade_id = row["trade_id"]
-        remaining = conn.execute(
-            "SELECT COUNT(*) AS n FROM trade_lots WHERE trade_id = ?",
-            (trade_id,)).fetchone()["n"]
-        if remaining <= 1:
-            # A position with no lots has no cost basis and could not be graded.
-            # Deleting the trade is the honest interpretation of removing its
-            # last buy, but that is the caller's decision, not a silent one.
-            raise ValueError(
-                "This is the only buy on the position - delete the whole trade "
-                "instead of its last lot.")
+        lots, exits = _lots_exits(conn, trade_id)
+        # Also catches removing a buy whose shares were later sold, which the
+        # old count-only check let through as a quietly clamped oversell.
+        _check_history([l for l in lots if l["id"] != lot_id], exits)
         conn.execute("DELETE FROM trade_lots WHERE id = ?", (lot_id,))
-        _recompute(conn, trade_id)
+        _changed(conn, trade_id)
     return get_trade(trade_id)
 
 
@@ -320,7 +341,7 @@ def add_exit(trade_id, exit_date, qty, price, fee=0.0, note=None):
             "INSERT INTO trade_exits (trade_id, exit_date, qty, price, fee, note)"
             " VALUES (?, ?, ?, ?, ?, ?)",
             (trade_id, exit_date, qty, price, fee or 0.0, note))
-        _recompute(conn, trade_id)
+        _changed(conn, trade_id)
     return get_trade(trade_id)
 
 
@@ -333,11 +354,58 @@ def delete_exit(exit_id):
             return None
         trade_id = row["trade_id"]
         conn.execute("DELETE FROM trade_exits WHERE id = ?", (exit_id,))
-        _recompute(conn, trade_id)
-        # The grade belonged to a holding period that no longer ends there.
-        if conn.execute("SELECT status FROM trades WHERE id = ?",
-                        (trade_id,)).fetchone()["status"] != "closed":
-            conn.execute("UPDATE trades SET outcome = NULL WHERE id = ?", (trade_id,))
+        _changed(conn, trade_id)
+    return get_trade(trade_id)
+
+
+_EDITABLE = {
+    "trade_lots": ("lot_date", "qty", "price", "fee", "note"),
+    "trade_exits": ("exit_date", "qty", "price", "fee", "note"),
+}
+
+
+def update_entry(table, row_id, fields):
+    """Correct one buy or sale in place. Returns the trade, or None if missing.
+
+    The proposed history is validated as a whole before anything is written, in
+    the same transaction, so an edit that would make any sale -- not only the
+    edited one -- oversell is refused and nothing changes.
+    """
+    allowed = _EDITABLE[table]
+    fields = dict((k, v) for k, v in fields.items() if k in allowed and v is not None)
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM %s WHERE id = ?" % table,
+                           (row_id,)).fetchone()
+        if not row:
+            return None
+        trade_id = row["trade_id"]
+        lots, exits = _lots_exits(conn, trade_id)
+        target = lots if table == "trade_lots" else exits
+        for r in target:
+            if r["id"] == row_id:
+                r.update(fields)
+        _check_history(lots, exits)
+        if fields:
+            conn.execute(
+                "UPDATE %s SET %s WHERE id = ?" % (
+                    table, ", ".join("%s = ?" % k for k in fields)),
+                list(fields.values()) + [row_id])
+        _changed(conn, trade_id)
+    return get_trade(trade_id)
+
+
+def update_trade(trade_id, fields):
+    """Correct a trade's ticker, linked recommendation, or note."""
+    allowed = ("ticker", "recommendation_id", "followed_pick", "note")
+    fields = dict((k, v) for k, v in fields.items() if k in allowed)
+    with connect() as conn:
+        if not conn.execute("SELECT 1 FROM trades WHERE id = ?", (trade_id,)).fetchone():
+            return None
+        if fields:
+            conn.execute(
+                "UPDATE trades SET %s WHERE id = ?" % ", ".join("%s = ?" % k for k in fields),
+                list(fields.values()) + [trade_id])
+        _changed(conn, trade_id)
     return get_trade(trade_id)
 
 
