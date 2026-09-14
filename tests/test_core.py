@@ -556,6 +556,55 @@ check("a sale dated after today still lands in a month instead of vanishing",
       late["monthly"][-1]["month"] == "2026-07" and late["totals"]["realised_pnl"] == 20.0)
 
 
+# ------------------------------------------------------------ login
+
+print("\nLOGIN")
+
+from app import auth                                            # noqa: E402
+
+auth.AUTH_FILE = os.path.join(tempfile.mkdtemp(prefix="stocks_auth_"), "auth.json")
+check("with no password set, remote login is not enabled", auth.enabled() is False)
+try:
+    auth.set_password("short")
+    check("a password under 8 characters is refused", False)
+except ValueError:
+    check("a password under 8 characters is refused", True)
+
+auth.set_password("correct horse battery")
+check("the right password is accepted", auth.check_password("correct horse battery"))
+check("a wrong one is not", not auth.check_password("correct horse batterY"))
+check("the password is not stored in the clear",
+      "correct horse" not in open(auth.AUTH_FILE, encoding="utf-8").read())
+
+t0 = 1_800_000_000
+tok = auth.issue_token(now=t0)
+check("a fresh session token is valid", auth.valid_token(tok, now=t0 + 60))
+check("it is still valid after 29 days", auth.valid_token(tok, now=t0 + 29 * 86400))
+check("it expires after 30 days", not auth.valid_token(tok, now=t0 + 31 * 86400))
+check("a tampered signature is rejected", not auth.valid_token(tok[:-1] + ("0" if tok[-1] != "0" else "1"), now=t0))
+check("a token dated in the future is rejected",
+      not auth.valid_token(auth.issue_token(now=t0 + 3600), now=t0))
+check("garbage is rejected", not auth.valid_token("not-a-token", now=t0)
+      and not auth.valid_token(None, now=t0))
+
+auth.set_password("a different password")
+check("changing the password signs every device out", not auth.valid_token(tok, now=t0 + 60))
+
+check("only loopback counts as the laptop",
+      auth.is_loopback("127.0.0.1") and auth.is_loopback("::1")
+      and not auth.is_loopback("192.168.1.171") and not auth.is_loopback(""))
+
+ip = "10.9.9.9"
+waits = [auth.record_failure(ip, now=t0) for _ in range(4)]
+check("four wrong attempts cost nothing", waits == [0, 0, 0, 0] and auth.locked_for(ip, now=t0) == 0)
+check("the fifth locks the device out for 30 s", auth.record_failure(ip, now=t0) == 30
+      and auth.locked_for(ip, now=t0 + 1) == 29)
+check("each further failure doubles the lockout", auth.record_failure(ip, now=t0 + 40) == 60)
+check("and it is capped at an hour", max(auth.record_failure(ip, now=t0 + 50) for _ in range(20)) == 3600)
+auth.record_success(ip)
+check("a successful login clears the count", auth.locked_for(ip, now=t0 + 60) == 0)
+
+
 # ------------------------------------------------------------ scoreboard
 
 print("\nSCOREBOARD")

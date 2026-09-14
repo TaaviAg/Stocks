@@ -2,7 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover lets the bottom tab bar sit clear of the iPhone home
+     indicator via env(safe-area-inset-bottom). -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2b6cb0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Stocks">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="/static/manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
 <title>Stock Trading Tracker</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -13,15 +23,18 @@
     <span class="mark"></span>
     <h1>Stock Trading Tracker</h1>
   </div>
+  <!-- One nav, two shapes: a row of tabs on a wide screen, a fixed bar at the
+       bottom of a phone, where a thumb reaches it. Same buttons, same handler. -->
   <nav class="tabs" id="tabs">
-    <button data-tab="pick" class="active">Hotlist &amp; pick</button>
-    <button data-tab="trades">Trades</button>
-    <button data-tab="performance">Performance</button>
-    <button data-tab="history">History</button>
-    <button data-tab="record">Track record</button>
+    <button data-tab="pick" class="active"><svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V9m5 9V5m5 13v-6m5 6V8"/></svg><span class="tl">Hotlist &amp; pick</span><span class="ts">Pick</span></button>
+    <button data-tab="trades"><svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h9"/></svg><span class="tl">Trades</span><span class="ts">Trades</span></button>
+    <button data-tab="performance"><svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17l5-5 4 3 7-8"/></svg><span class="tl">Performance</span><span class="ts">Results</span></button>
+    <button data-tab="history"><svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg><span class="tl">History</span><span class="ts">History</span></button>
+    <button data-tab="record"><svg class="ti" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8v5a4 4 0 0 1-8 0zM12 13v4m-4 3h8"/></svg><span class="tl">Track record</span><span class="ts">Record</span></button>
   </nav>
-  <button id="refresh" class="ghost"
-          title="Re-fetch prices from Yahoo now instead of waiting for the 10-minute cache to expire. Only prices - your trades are not affected.">Refresh prices</button>
+  <button id="refresh" class="ghost" aria-label="Refresh prices"
+          title="Re-fetch prices from Yahoo now instead of waiting for the 10-minute cache to expire. Only prices - your trades are not affected."><svg class="ti ri" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/></svg><span class="rl">Refresh prices</span></button>
+  <button id="logout" class="ghost" hidden>Log out</button>
 </header>
 
 <div id="toast" class="toast" hidden></div>
@@ -131,6 +144,22 @@
   <div class="dialog-actions">
     <button type="button" id="buy-cancel">Cancel</button>
     <button type="button" id="buy-ok" class="primary">Log buy</button>
+  </div>
+</dialog>
+
+<dialog id="entry-dialog">
+  <h2 id="ed-title">Correct</h2>
+  <p class="sub">Totals, P&amp;L and the grade are recalculated when you save.</p>
+  <div class="ed-grid">
+    <label class="field"><span>Date</span><input type="date" id="ed-date"></label>
+    <label class="field"><span>Shares</span><input type="number" id="ed-qty" step="any" min="0" inputmode="decimal"></label>
+    <label class="field"><span>Price</span><input type="number" id="ed-price" step="any" min="0" inputmode="decimal"></label>
+    <label class="field"><span>Fee</span><input type="number" id="ed-fee" step="any" min="0" inputmode="decimal"></label>
+  </div>
+  <p class="sub" id="ed-preview"></p>
+  <div class="dialog-actions">
+    <button type="button" id="ed-cancel">Cancel</button>
+    <button type="button" id="ed-save" class="primary">Save</button>
   </div>
 </dialog>
 

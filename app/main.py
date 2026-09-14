@@ -4,12 +4,12 @@ import os
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app import db, performance, position, review
+from app import auth, db, performance, position, review
 from app.config import CFG, ROOT
 from app.data import (DataError, clear_cache, close_on_or_before, history,
                       live_quote, resolve)
@@ -28,6 +28,84 @@ def _startup():
 @app.exception_handler(DataError)
 def _data_error(request, exc):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+# ---------------------------------------------------------------------- auth
+
+# What a browser needs before it has logged in: the login page itself, the
+# stylesheet it uses, and what a phone fetches to show a home-screen icon.
+_PUBLIC = ("/login", "/api/login", "/static/style.css", "/static/manifest.json",
+           "/static/icons/", "/favicon.ico")
+
+
+@app.middleware("http")
+async def _require_login(request: Request, call_next):
+    path = request.url.path
+    client = request.client.host if request.client else ""
+    if auth.is_loopback(client) or any(path == p or (p.endswith("/") and path.startswith(p))
+                                       for p in _PUBLIC):
+        return await call_next(request)
+
+    if not auth.enabled():
+        # Fail closed: a server reachable from the network with no password is
+        # not a server that should answer the network.
+        return JSONResponse(status_code=403, content={
+            "detail": "Remote access is off until a password is set - run "
+                      "set-password.bat on the laptop."})
+
+    if auth.valid_token(request.cookies.get(auth.COOKIE)):
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse(status_code=401, content={"detail": "Log in first."})
+    return RedirectResponse("/login", status_code=303)
+
+
+class LoginBody(BaseModel):
+    password: str = Field(max_length=512)
+
+
+@app.get("/login")
+def login_page():
+    return FileResponse(os.path.join(STATIC_DIR, "login.html"),
+                        headers={"Cache-Control": "no-cache, must-revalidate"})
+
+
+@app.post("/api/login")
+def api_login(body: LoginBody, request: Request):
+    ip = request.client.host if request.client else "?"
+    wait = auth.locked_for(ip)
+    if wait:
+        raise HTTPException(429, "Too many attempts. Try again in %d seconds." % wait)
+    if not auth.enabled():
+        raise HTTPException(403, "No password is set yet - run set-password.bat on the laptop.")
+    if not auth.check_password(body.password):
+        wait = auth.record_failure(ip)
+        raise HTTPException(401, "Wrong password." + (
+            " Locked for %d seconds." % wait if wait else ""))
+    auth.record_success(ip)
+    resp = JSONResponse({"ok": True})
+    # HttpOnly: unreadable from page script. SameSite=Lax: not sent on a
+    # cross-site POST, which with JSON-only write endpoints is the CSRF guard.
+    # No Secure flag -- plain http on the home network cannot carry one; the
+    # cloud version will be https-only.
+    resp.set_cookie(auth.COOKIE, auth.issue_token(), max_age=auth.SESSION_SECONDS,
+                    httponly=True, samesite="lax", path="/")
+    return resp
+
+
+@app.post("/api/logout")
+def api_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/session")
+def api_session(request: Request):
+    """Whether this device is signed in remotely, so the page knows to offer
+    Log out -- pointless on the laptop, where no login exists."""
+    client = request.client.host if request.client else ""
+    return {"local": auth.is_loopback(client), "password_set": auth.enabled()}
 
 
 # ------------------------------------------------------------------ schemas

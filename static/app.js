@@ -13,12 +13,27 @@ async function api(path, opts = {}) {
     ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
+  // The session ran out (30 days) or the password was changed: go and log in
+  // rather than surface "Log in first." as an error on whatever was clicked.
+  if (res.status === 401 && !path.startsWith("/api/login")) {
+    location.replace("/login");
+    return new Promise(() => {});
+  }
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = { detail: text }; }
   if (!res.ok) throw new Error((data && data.detail) || res.statusText);
   return data;
 }
+
+// Log out only means something on a device that had to log in.
+api("/api/session").then(s => {
+  $("#logout").hidden = !!s.local;
+}).catch(() => {});
+$("#logout").onclick = async () => {
+  await api("/api/logout", { method: "POST" });
+  location.replace("/login");
+};
 
 let toastTimer;
 function toast(msg, bad = false) {
@@ -49,6 +64,21 @@ function pct(v, d = 2) {
 /** The LOCAL calendar date. `toISOString()` is UTC, which in Tallinn meant that
  *  from midnight until 03:00 "today" was still yesterday -- wrong as a default
  *  date on a trade, and wrong as the bound for "a buy can't be in the future". */
+/** On touch, a chart tooltip stays up after the tap that opened it; a tap
+ *  anywhere outside that chart puts it away. Registered once per chart
+ *  element, and forgotten when the chart is re-rendered and removed. */
+const _tapAway = new Set();
+function dismissOnTapOutside(el, hide) {
+  _tapAway.add({ el, hide });
+}
+document.addEventListener("pointerdown", e => {
+  if (e.pointerType !== "touch") return;
+  for (const entry of [..._tapAway]) {
+    if (!entry.el.isConnected) { _tapAway.delete(entry); continue; }
+    if (!entry.el.contains(e.target)) entry.hide();
+  }
+}, true);
+
 const today = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${
@@ -79,7 +109,9 @@ $$("#tabs button").forEach(b => b.onclick = () => {
  *  affected. */
 $("#refresh").onclick = async () => {
   const btn = $("#refresh");
-  const label = btn.textContent;
+  // innerHTML, not textContent: the button holds an icon, which restoring
+  // plain text would have deleted after the first refresh.
+  const label = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = '<span class="spin"></span>Refreshing';
   try {
@@ -98,7 +130,7 @@ $("#refresh").onclick = async () => {
     toast(e.message, true);
   } finally {
     btn.disabled = false;
-    btn.textContent = label;
+    btn.innerHTML = label;
   }
 };
 
@@ -373,7 +405,7 @@ function relativeSeries(ranked, sessions = COMPARE_SESSIONS) {
  *  comparison the cards cannot make. Buying at 73 and watching it climb is a
  *  different lesson from buying at 73 on the way down.
  */
-function tradeMarks(series, colours, x, y, dates) {
+function tradeMarks(series, colours, x, y, dates, plotTop, plotBottom) {
   const marks = [];
   let bands = "", glyphs = "";
   const n = dates.length;
@@ -426,11 +458,14 @@ function tradeMarks(series, colours, x, y, dates) {
             num(mark, 2)}</div>` : ""}`;
       }
 
-      bands += `<rect x="${x0.toFixed(1)}" y="${y(100).toFixed(1)}"
-        width="${(x1 - x0).toFixed(1)}" height="${(y(0) - y(100)).toFixed(1)}"
+      // The plot's own top and bottom, not y(100)..y(0): the axis only spans
+      // the range the scores use (e.g. 20-90), so 100 and 0 lie outside the
+      // chart and the band spilled over the text above and the table below.
+      bands += `<rect x="${x0.toFixed(1)}" y="${plotTop.toFixed(1)}"
+        width="${(x1 - x0).toFixed(1)}" height="${(plotBottom - plotTop).toFixed(1)}"
         fill="${colours[s.ticker]}" opacity="0.10"/>
-        <line x1="${x0.toFixed(1)}" y1="${y(100).toFixed(1)}"
-              x2="${x0.toFixed(1)}" y2="${y(0).toFixed(1)}"
+        <line x1="${x0.toFixed(1)}" y1="${plotTop.toFixed(1)}"
+              x2="${x0.toFixed(1)}" y2="${plotBottom.toFixed(1)}"
               stroke="${colours[s.ticker]}" stroke-width="1" opacity="0.45"
               vector-effect="non-scaling-stroke"/>`;
 
@@ -470,8 +505,8 @@ function tradeMarks(series, colours, x, y, dates) {
  *  their labels on top of one another and became unreadable. The dot stays at
  *  the true value; only the text is nudged, with a leader line whenever the
  *  nudge is big enough to notice. */
-function endLabels(byMove, y, colours, x, top, bottom) {
-  const GAP = 11.5;                      // viewBox units, ~1.4 line heights
+function endLabels(byMove, y, colours, x, top, bottom, GAP = 11.5) {
+  // GAP is in viewBox units, ~1.4 line heights at the label size in use.
   const items = byMove.map(s => {
     const v = s.pct[s.pct.length - 1];
     return { s, v, at: y(v), to: y(v) };
@@ -502,6 +537,15 @@ function endLabels(byMove, y, colours, x, top, bottom) {
   }).join("");
 }
 
+/** Score-chart geometry in viewBox units. A phone gets a narrow canvas drawn
+ *  at close to its real pixel width, so labels stay legible; shrinking the
+ *  760-wide desktop drawing onto a 350px screen made them about 6px tall. */
+function scoreGeom() {
+  return narrow()
+    ? { W: 400, H: 300, L: 30, R: 82, T: 14, B: 30, GAP: 14 }
+    : { W: 760, H: 250, L: 46, R: 96, T: 14, B: 30, GAP: 11.5 };
+}
+
 function comparisonChart(ranked) {
   const series = relativeSeries(ranked);
   if (series.length < 2) return "";
@@ -520,7 +564,7 @@ function comparisonChart(ranked) {
   const hi = Math.min(100, Math.ceil((Math.max(50, ...all) + 3) / step) * step);
 
   // The container includes the x-axis band, so labels are never clipped.
-  const W = 760, H = 250, L = 46, R = 96, T = 14, B = 30;
+  const { W, H, L, R, T, B, GAP } = scoreGeom();
   const x = i => L + (i * (W - L - R)) / (n - 1);
   const y = v => T + (H - T - B) * (1 - (v - lo) / (hi - lo || 1));
 
@@ -540,12 +584,14 @@ function comparisonChart(ranked) {
   // this printed "09-02" and "09-03" on top of each other.
   const stride = Math.max(1, Math.ceil(n / 6));
   const xlabels = dates.map((d, i) =>
-    (i === n - 1 || (i % stride === 0 && i <= n - 1 - Math.ceil(stride / 2)))
+    // A whole stride of clearance before the final label, not half: at phone
+    // width half a stride left "09-08" printed on top of "09-11".
+    (i === n - 1 || (i % stride === 0 && i <= n - 1 - stride))
       ? `<text x="${x(i).toFixed(1)}" y="${H - 10}" text-anchor="${
           i === n - 1 ? "end" : "middle"}" class="ax">${esc(d.slice(5))}</text>`
       : "").join("");
 
-  const overlay = tradeMarks(series, colours, x, y, dates);
+  const overlay = tradeMarks(series, colours, x, y, dates, T, H - B);
   state.chartMarks = overlay.marks;
 
   const lines = series.map(s => {
@@ -571,14 +617,14 @@ function comparisonChart(ranked) {
         today. <strong>50 is neutral.</strong> The top line here is the top card
         below; they cannot disagree, because they are the same number.${
           overlay.any ? ` <strong>Your own trades are shaded on the chart</strong>
-          &mdash; hover a triangle for what you did and where the position
-          stands.` : ""}</p>
+          &mdash; hover or tap a triangle for what you did and where the
+          position stands.` : ""}</p>
     </div>
     <div class="chartwrap" tabindex="0" role="img"
          aria-label="Score of ${series.length} candidates at each of the last
            ${COMPARE_SESSIONS} closes, 0 to 100 with 50 neutral. Values are
            listed in the table below."
-         data-dates="${esc(dates.join(","))}">
+         data-dates="${esc(dates.join(","))}" data-l="${L}" data-r="${R}">
       <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
         ${grid}${xlabels}
         ${overlay.bands}
@@ -594,7 +640,7 @@ function comparisonChart(ranked) {
         </g>
         <rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}"
               fill="transparent" class="hit"/>
-        ${endLabels(byMove, y, colours, W - R + 8, T, H - B)}
+        ${endLabels(byMove, y, colours, W - R + 8, T, H - B, GAP)}
       </svg>
       <div class="chart-tip" hidden></div>
     </div>
@@ -631,7 +677,9 @@ function wireChartHover(rec) {
   const colours = seriesColours(series.map(s => s.ticker));
   const dates = wrap.dataset.dates.split(",");
   const n = dates.length;
-  const L = 46, R = 96, W = 760;
+  // Read back from the drawn chart, not recomputed: the viewport may have
+  // changed shape since it was rendered.
+  const W = svg.viewBox.baseVal.width, L = +wrap.dataset.l, R = +wrap.dataset.r;
   let at = -1;
 
   const show = i => {
@@ -672,18 +720,34 @@ function wireChartHover(rec) {
       const frac = (+hit.getAttribute("cx")) / W;
       tip.style.left = `${Math.min(64, Math.max(2, frac * 100))}%`;
     });
-    hit.addEventListener("pointerleave", () => { onMark = false; hide(); });
+    // A finger "leaves" the moment it lifts, which would hide the tooltip the
+    // same instant the tap showed it. On touch it stays until a tap elsewhere.
+    hit.addEventListener("pointerleave", e => {
+      if (e.pointerType === "touch") return;
+      onMark = false; hide();
+    });
   });
 
   // The hit area is the whole plot, so there is no pinpoint target to land on.
-  svg.addEventListener("pointermove", ev => {
-    if (onMark) return;
+  const at_x = ev => {
     const box = svg.getBoundingClientRect();
     const vx = ((ev.clientX - box.left) / box.width) * W;
     const i = Math.round(((vx - L) / (W - L - R)) * (n - 1));
     if (i >= 0 && i < n) show(i); else hide();
+  };
+  svg.addEventListener("pointermove", ev => {
+    if (onMark || ev.pointerType === "touch") return;
+    at_x(ev);
   });
-  svg.addEventListener("pointerleave", hide);
+  // A tap does not reliably produce pointermove, so touch reads the date from
+  // where the finger went down -- unless it landed on one of your trades.
+  svg.addEventListener("pointerdown", ev => {
+    if (ev.pointerType !== "touch" || ev.target.classList.contains("tradehit")) return;
+    onMark = false;
+    at_x(ev);
+  });
+  svg.addEventListener("pointerleave", ev => { if (ev.pointerType !== "touch") hide(); });
+  dismissOnTapOutside(wrap, () => { onMark = false; hide(); });
   wrap.addEventListener("keydown", ev => {
     if (ev.key === "ArrowRight") { show(at < 0 ? 0 : Math.min(n - 1, at + 1)); ev.preventDefault(); }
     if (ev.key === "ArrowLeft") { show(at < 0 ? n - 1 : Math.max(0, at - 1)); ev.preventDefault(); }
@@ -977,11 +1041,13 @@ function addLotRow(qty = "", price = null) {
   const row = document.createElement("div");
   row.className = "lot-row";
   row.innerHTML = `
-    <input type="date" data-k="date" value="${today()}" max="${today()}">
-    <input type="number" data-k="qty" step="any" min="0" placeholder="0" value="${qty}">
-    <input type="number" data-k="price" step="any" min="0" placeholder="0.00"
-           value="${price ?? (buy.price ?? "")}">
-    <input type="number" data-k="fee" step="any" min="0" placeholder="0" value="">
+    <input type="date" data-k="date" value="${today()}" max="${today()}" aria-label="Date">
+    <input type="number" data-k="qty" step="any" min="0" placeholder="Shares" aria-label="Shares"
+           inputmode="decimal" value="${qty}">
+    <input type="number" data-k="price" step="any" min="0" placeholder="Price" aria-label="Price"
+           inputmode="decimal" value="${price ?? (buy.price ?? "")}">
+    <input type="number" data-k="fee" step="any" min="0" placeholder="Fee" aria-label="Fee"
+           inputmode="decimal" value="">
     <button type="button" class="tiny danger" data-drop title="Remove">&times;</button>`;
   $("[data-drop]", row).onclick = () => {
     if ($$("#lot-rows .lot-row").length <= 1) return;   // never leave zero rows
@@ -1288,7 +1354,41 @@ function renderTradeList(trades) {
         g.priced && g.invested ? signed((100 * g.pnl) / g.invested) + "%" : "&mdash;"}</strong></td>
       <td></td></tr>`).join("");
 
-  box.innerHTML = `<div class="table-wrap trade-table"><table>
+  // Phone form of the same rows. Built from the identical `tradeRow` data and
+  // sorted with the table, so the two views cannot disagree; CSS shows one.
+  const card = r => {
+    const t = r.t, e = t.econ;
+    const statusText = { open: "Open", part: "Part sold", closed: "Closed" }[r.status];
+    return `<button type="button" class="tcard" data-open-trade="${t.id}">
+      <span class="tc-top">
+        <strong class="mono">${esc(t.ticker)}</strong>
+        <span class="pill ${r.status === "open" ? "clear" : r.status === "part" ? "slight" : "tie"}">${statusText}</span>
+        <span class="tc-pnl ${tone(r.pnl)}">${r.pnl == null ? "&mdash;" : signed(r.pnl)}</span>
+      </span>
+      <span class="tc-mid">
+        <span>${shareText(e.qty_bought)} sh &middot; ${num(r.avgCost, 2)} &rarr; ${
+          r.exitOrMark == null ? "&mdash;" : num(r.exitOrMark, 2)}${r.markLabel ? ` <em>${esc(r.markLabel)}</em>` : ""}</span>
+        <span class="tc-ret ${tone(r.ret)}">${r.ret == null ? "" : signed(r.ret) + "%"}</span>
+      </span>
+      <span class="tc-bot">
+        <span>${esc(r.opened)} &rarr; ${r.closed ? esc(r.closed) : "now"} &middot; ${daysText(r.held)}</span>
+        <span>${t.recommendation_id ? `#${t.recommendation_id}${r.rank ? ` &middot; ${r.rank}/${r.of}` : ""}` : "not graded"}</span>
+      </span>
+    </button>`;
+  };
+  const mobileSort = `<label class="tc-sort"><span>Sort</span>
+    <select id="trade-sort">${TRADE_COLUMNS.filter(c => c.key !== "status").map(c =>
+      `<option value="${c.key}:-1"${tradeView.sort === c.key && tradeView.dir < 0 ? " selected" : ""}>${c.label.replace("&amp;", "&")} &darr;</option>
+       <option value="${c.key}:1"${tradeView.sort === c.key && tradeView.dir > 0 ? " selected" : ""}>${c.label.replace("&amp;", "&")} &uarr;</option>`).join("")}
+    </select></label>`;
+  const cardTotals = Object.entries(byCcy).map(([c, g]) => `<div class="tc-total">
+      <span>${g.n} trade${g.n === 1 ? "" : "s"}${c !== "?" ? ` &middot; ${esc(c)}` : ""} &middot; invested ${num(g.invested)}</span>
+      <strong class="${g.priced ? tone(g.pnl) : ""}">${g.priced ? `${signed(g.pnl)} (${
+        g.invested ? signed((100 * g.pnl) / g.invested) + "%" : "&mdash;"})` : "&mdash;"}</strong>
+    </div>`).join("");
+
+  box.innerHTML = `<div class="trade-cards">${mobileSort}${rows.map(card).join("")}${cardTotals}</div>
+  <div class="table-wrap trade-table"><table>
     <thead><tr>${TRADE_COLUMNS.map(c => `<th class="${c.num ? "num" : ""}">
       <button type="button" class="sort ${tradeView.sort === c.key ? "on" : ""}" data-sort="${c.key}">${c.label}${
         tradeView.sort === c.key ? (tradeView.dir < 0 ? " &darr;" : " &uarr;") : ""}</button></th>`).join("")}</tr></thead>
@@ -1308,6 +1408,13 @@ function renderTradeList(trades) {
     tr.onclick = go;
     tr.onkeydown = e => { if (e.key === "Enter") go(); };
   });
+  const sortSel = $("#trade-sort");
+  if (sortSel) sortSel.onchange = () => {
+    const [key, dir] = sortSel.value.split(":");
+    tradeView.sort = key;
+    tradeView.dir = +dir;
+    renderTradeList(Object.values(state.tradesById));
+  };
 }
 
 $$("#trade-filter button").forEach(b => b.onclick = () => {
@@ -1327,12 +1434,72 @@ $("#trade-search").addEventListener("input", e => {
  *  and the row around it -- the other packages, the totals -- is the context
  *  needed to get it right. Only one row edits at a time; opening another puts
  *  the first back. */
+const narrow = () => matchMedia("(max-width: 700px)").matches;
+
+async function saveEntry(kind, id, r) {
+  if (!(r.qty > 0) || !(r.price > 0)) throw new Error("Shares and price must be above zero.");
+  if (r.date > today()) throw new Error("That date is in the future.");
+  const t = await api(`/api/${kind === "lot" ? "lots" : "exits"}/${id}`,
+                      { method: "PATCH", body: r });
+  toast(t.status === "closed" && t.outcome && t.outcome.verdict
+    ? `Saved. Re-graded: ${t.outcome.verdict}`
+    : `Saved ${t.ticker}. Totals and P&L recalculated.`);
+  return t;
+}
+
+/** The same correction as the inline row, as a full-screen form. On a phone
+ *  the ledger's inputs would sit inside a table scrolled sideways, half off
+ *  screen; a form that fills the screen is the usable shape there. */
+function openEntryDialog(kind, id, trade, entry) {
+  const dlg = $("#entry-dialog");
+  $("#ed-title").textContent = `Correct ${kind === "lot" ? "buy" : "sale"} · ${trade.ticker}`;
+  $("#ed-date").value = kind === "lot" ? entry.lot_date : entry.exit_date;
+  $("#ed-date").max = today();
+  $("#ed-qty").value = entry.qty;
+  $("#ed-price").value = entry.price;
+  $("#ed-fee").value = entry.fee || 0;
+  const read = () => ({
+    date: $("#ed-date").value,
+    qty: Number($("#ed-qty").value.replace(",", ".")),
+    price: Number($("#ed-price").value.replace(",", ".")),
+    fee: Number($("#ed-fee").value.replace(",", ".")) || 0,
+  });
+  const preview = () => {
+    const r = read();
+    const v = kind === "lot" ? r.qty * r.price + r.fee : r.qty * r.price - r.fee;
+    $("#ed-preview").innerHTML = r.qty > 0 && r.price > 0
+      ? `${kind === "lot" ? "Cost" : "Proceeds"} <strong class="mono">${num(Math.round(v * 1e6) / 1e6)}</strong>` : "";
+  };
+  ["#ed-qty", "#ed-price", "#ed-fee"].forEach(s => { $(s).oninput = preview; });
+  preview();
+  $("#ed-cancel").onclick = () => dlg.close();
+  $("#ed-save").onclick = async () => {
+    const btn = $("#ed-save");
+    btn.disabled = true;
+    try {
+      await saveEntry(kind, id, read());
+      dlg.close();
+      loadTrades();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  dlg.showModal();
+}
+
 function editEntryRow(btn) {
   const [kind, id] = btn.dataset.editEntry.split(":");
   const trade = state.tradesById[+btn.dataset.trade];
   const list = kind === "lot" ? trade.lots : trade.exits;
   const entry = list.find(x => x.id === +id);
   if (!entry) return;
+
+  if (narrow() || !btn.closest("tr")) {
+    openEntryDialog(kind, +id, trade, entry);
+    return;
+  }
 
   if ($("tr.editing")) {
     toast("Save or cancel the row you are already editing first.", true);
@@ -1377,17 +1544,10 @@ function editEntryRow(btn) {
 
   $("[data-cancel]", tr).onclick = () => loadTrades();
   $("[data-save]", tr).onclick = async () => {
-    const r = read();
-    if (!(r.qty > 0) || !(r.price > 0)) { toast("Shares and price must be above zero.", true); return; }
-    if (r.date > today()) { toast("That date is in the future.", true); return; }
     const save = $("[data-save]", tr);
     save.disabled = true;
     try {
-      const t = await api(`/api/${kind === "lot" ? "lots" : "exits"}/${id}`,
-                          { method: "PATCH", body: r });
-      toast(t.status === "closed" && t.outcome && t.outcome.verdict
-        ? `Saved. Re-graded: ${t.outcome.verdict}`
-        : `Saved ${t.ticker}. Totals and P&L recalculated.`);
+      await saveEntry(kind, id, read());
       loadTrades();
     } catch (e) {
       toast(e.message, true);
@@ -1501,7 +1661,25 @@ function ledgerTable(t) {
       &middot; avg cost <strong class="mono">${num(e.open_avg_cost, 4)}</strong></span>` : ""}
   </div>`;
 
-  return `${summary}<div class="table-wrap ledger"><table>
+  const actions = r => `<button class="tiny" data-edit-entry="${r.kind}:${r.id}" data-trade="${t.id}"
+        title="Correct this ${r.kind === "lot" ? "buy" : "sale"}">&#9998;</button>${
+    r.kind === "exit"
+      ? `<button class="tiny danger" data-del-exit="${r.id}" title="Undo this sale">&times;</button>`
+      : lots.length > 1
+        ? `<button class="tiny danger" data-del-lot="${r.id}" title="Remove this buy">&times;</button>` : ""}`;
+  // Phone form: one card per transaction, same rows, same buttons.
+  const cards = `<div class="ledger-cards">${rows.map(r => `<div class="lcard">
+      <div class="lc-top">
+        <span class="txn ${r.kind === "lot" ? "buy" : "sell"}">${r.kind === "lot" ? "Buy" : "Sell"}</span>
+        <span class="mono">${esc(r.date)}</span>
+        <span class="lc-amt mono">${r.kind === "lot" ? "&minus;" : "+"}${num(r.amount)}</span>
+      </div>
+      <div class="lc-mid mono">${shareText(r.qty)} &times; ${num(r.price, 4)}${r.fee ? ` &middot; fee ${num(r.fee)}` : ""}
+        <span class="lc-held">held ${shareText(r.held)}</span></div>
+      <div class="lc-act">${actions(r)}</div>
+    </div>`).join("")}</div>`;
+
+  return `${summary}${cards}<div class="table-wrap ledger"><table>
     <thead><tr><th>Date</th><th>Type</th><th class="num">Shares</th><th class="num">Price</th>
       <th class="num">Fee</th><th class="num">Amount</th><th class="num">Held after</th><th></th></tr></thead>
     <tbody>${rows.map(r => `<tr>
@@ -1935,7 +2113,7 @@ function countBars(monthly) {
  *  is a claim about a period: a fortnight with no sales should look like a
  *  fortnight, not vanish between two adjacent points. */
 function cumulativeLine(points, ccy) {
-  const W = 780, H = 230, L = 56, R = 20, T = 18, B = 28;
+  const [W, H, L, R, T, B] = narrow() ? [400, 240, 44, 14, 18, 28] : [780, 230, 56, 20, 18, 28];
   const day = s => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10));
   const t0 = day(points[0].date), t1 = Math.max(day(points[points.length - 1].date), t0 + 864e5);
   const x = s => L + (W - L - R) * (day(s) - t0) / (t1 - t0);
@@ -2013,8 +2191,10 @@ function wirePerfTips(wrap) {
   const hide = () => { tip.hidden = true; at = -1; hits.forEach(o => o.classList.remove("on")); };
   hits.forEach((h, i) => {
     h.addEventListener("pointerenter", () => show(i));
-    h.addEventListener("pointerleave", hide);
+    h.addEventListener("pointerdown", e => { if (e.pointerType === "touch") show(i); });
+    h.addEventListener("pointerleave", e => { if (e.pointerType !== "touch") hide(); });
   });
+  dismissOnTapOutside(wrap, hide);
   wrap.addEventListener("keydown", e => {
     if (e.key === "ArrowRight") { show(Math.min(hits.length - 1, at + 1)); e.preventDefault(); }
     if (e.key === "ArrowLeft") { show(Math.max(0, at < 0 ? hits.length - 1 : at - 1)); e.preventDefault(); }

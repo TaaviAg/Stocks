@@ -634,3 +634,169 @@ tr.editing .edit-preview { color: var(--ink-2); }
 /* Dates and amounts broke across two lines on a narrow screen; the ledger
    scrolls sideways inside its frame instead. */
 .ledger td { white-space: nowrap; }
+
+/* ============================================================== phones ==
+   One stylesheet, two shapes. Everything below only applies under 700px; the
+   desktop layout above is untouched. Nothing here changes what the app does,
+   only where things sit and how big they are to touch. */
+
+/* Desktop defaults for elements that only exist for the phone layout. */
+.tabs .ti, #refresh .ti { display: none; }
+.tabs .ts { display: none; }
+.trade-cards, .ledger-cards { display: none; }
+.ed-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 12px; }
+.login-body { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+.login { width: min(380px, 100%); }
+.login .brand { margin-bottom: 14px; justify-content: center; }
+.login .panel { display: grid; gap: 12px; }
+.login .primary { padding: 10px; }
+.login input { font-size: 16px; }
+
+@media (max-width: 700px) {
+  body {
+    font-size: 15px;
+    /* Room for the fixed tab bar plus the iPhone home indicator. */
+    padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  }
+
+  /* iOS zooms the whole page when a focused input's text is under 16px, and
+     does not zoom back out. */
+  input, select, textarea { font-size: 16px !important; }
+
+  /* ------------------------------------------------ top bar and tab bar */
+  .topbar { padding: 8px 14px; padding-top: calc(8px + env(safe-area-inset-top));
+            gap: 10px; flex-wrap: nowrap; }
+  .brand h1 { font-size: 15px; white-space: nowrap; }
+  #refresh { padding: 8px; margin-left: auto; }
+  #refresh .rl { display: none; }
+  #refresh .ti { display: block; }
+  #logout { padding: 8px 10px; }
+
+  .tabs {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    margin: 0; gap: 0; display: grid; grid-template-columns: repeat(5, 1fr);
+    background: var(--surface); border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tabs button {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; min-height: 58px; border-radius: 0; padding: 6px 2px;
+    font-size: 11px; color: var(--ink-3);
+  }
+  .tabs button:hover { background: none; }
+  .tabs button.active { background: none; color: var(--accent); }
+  .tabs .tl { display: none; }
+  .tabs .ts { display: block; font-weight: 600; }
+  .ti { display: block !important; width: 22px; height: 22px; fill: none;
+        stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  .toast { bottom: calc(76px + env(safe-area-inset-bottom)); width: calc(100% - 28px);
+           text-align: center; }
+
+  /* ------------------------------------------------------------ layout */
+  .tab { padding: 10px; }
+  .panel { padding: 14px; border-radius: 12px; margin-bottom: 12px; }
+  .sub { font-size: 13px; }
+
+  /* Every control big enough for a thumb: ~40px tall. */
+  button { min-height: 40px; }
+  button.tiny { min-height: 36px; min-width: 36px; padding: 6px 10px; font-size: 13px; }
+  .actions { gap: 10px; }
+  .actions > button, .actions > .primary { flex: 1 1 auto; }
+
+  /* ------------------------------------------------------------ hotlist */
+  .slots { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px; }
+  .slot { padding: 10px; }
+  .slot .row input { min-width: 0; padding: 8px; }
+  .slot .meta { font-size: 11.5px; min-height: 30px; }
+  .slot .meta strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #run { flex: 1 1 100%; min-height: 48px; font-size: 16px; }
+
+  .verdict-bar { gap: 10px; }
+  .verdict-bar .why { flex-basis: 100%; }
+  .verdict-bar > button { width: 100%; min-height: 46px; }
+  .cards { grid-template-columns: 1fr; }
+  .plan { grid-template-columns: repeat(2, 1fr); }
+
+  /* ------------------------------------------------------------- trades */
+  .list-tools { gap: 8px; }
+  .seg { flex: 1 1 100%; }
+  .seg button { flex: 1; min-height: 40px; }
+  .list-tools input[type=search] { width: 100%; }
+  #log-trade { min-height: 42px; }
+
+  .trade-table, .trade-table + .sub { display: none; }
+  .trade-cards { display: grid; gap: 8px; }
+  .tc-sort { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); }
+  .tc-sort select { flex: 1; }
+  .tcard {
+    all: unset; box-sizing: border-box; display: grid; gap: 4px; width: 100%;
+    padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px;
+    background: var(--surface); cursor: pointer;
+  }
+  .tcard:active { background: var(--surface-2); }
+  .tcard:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .tc-top, .tc-mid, .tc-bot { display: flex; align-items: center; gap: 8px; }
+  .tc-top strong { font-size: 16px; }
+  .tc-pnl { margin-left: auto; font-family: var(--mono); font-weight: 700; font-size: 16px; }
+  .tc-mid { font-family: var(--mono); font-size: 13px; color: var(--ink); }
+  .tc-mid em { font-style: normal; color: var(--ink-3); font-size: 11px; }
+  .tc-ret { margin-left: auto; font-weight: 600; }
+  .tc-bot { font-size: 12px; color: var(--ink-3); justify-content: space-between; }
+  .tc-total { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+              padding: 10px 4px 2px; font-size: 13px; color: var(--ink-2); }
+  .tc-total strong { font-family: var(--mono); }
+
+  /* One trade */
+  #trade-detail .panel { padding: 12px; }
+  .back { font-size: 15px; padding: 6px 0; }
+  .trade-head { padding: 12px; gap: 8px; }
+  .trade-head .spacer { flex-basis: 100%; height: 0; }
+  .trade-body { padding: 12px; }
+  .ledger-summary { flex-direction: column; gap: 4px; }
+  .ledger { display: none; }
+  .ledger-cards { display: grid; gap: 8px; margin: 8px 0 4px; }
+  .lcard { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+           display: grid; gap: 4px; }
+  .lc-top { display: flex; align-items: center; gap: 8px; }
+  .lc-amt { margin-left: auto; font-weight: 700; }
+  .lc-mid { font-size: 13px; color: var(--ink-2); display: flex; gap: 8px; }
+  .lc-held { margin-left: auto; color: var(--ink-3); }
+  .lc-act { display: flex; justify-content: flex-end; gap: 8px; }
+
+  .sell-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sell-form button { grid-column: span 2; min-height: 46px; }
+
+  /* ------------------------------------------------------------ dialogs */
+  /* Full-screen sheets: a centred box with a keyboard open leaves no room. */
+  dialog {
+    width: 100%; max-width: 100%; height: 100%; max-height: 100%;
+    margin: 0; border-radius: 0; border: 0;
+    padding: 16px; padding-top: calc(16px + env(safe-area-inset-top));
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+  .dialog-actions { position: sticky; bottom: 0; background: var(--surface);
+                    padding-top: 12px; }
+  .dialog-actions button { flex: 1; min-height: 48px; }
+  .free-grid { grid-template-columns: 1fr; }
+  .ed-grid { grid-template-columns: repeat(2, 1fr); }
+  .lot-head { display: none; }
+  .lot-row { grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px;
+             border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; }
+  .lot-row input[type=date] { grid-column: span 2; }
+  .lot-row [data-drop] { grid-column: span 2; }
+
+  /* -------------------------------------------------------- performance */
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .stat .v { font-size: 19px; }
+  .perf-grid { grid-template-columns: 1fr; }
+  .perf-chart .ax, .compare .ax { font-size: 13px; }
+  .perf-chart .bar-label { font-size: 13px; }
+  /* 12, not 13: ten monospace characters must fit the 82-unit label gutter. */
+  .compare .endlabel { font-size: 12px; }
+
+  /* Wide tables that stay tables (history, grading) scroll inside their own
+     frame; the page itself never scrolls sideways. */
+  .table-wrap { margin-left: -2px; margin-right: -2px; }
+  .chart-tip { max-width: calc(100vw - 60px); }
+}

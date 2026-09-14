@@ -23,6 +23,26 @@ run.bat
 
 It opens <http://127.0.0.1:8000> in your browser. Ctrl+C in the console stops it.
 
+## On your phone (same Wi-Fi)
+
+1. Once, set a password: `set-password.bat`.
+2. Once, in an **admin** PowerShell, allow the phone in. Replace `<Wi-Fi name>`
+   with your network's name:
+
+   ```powershell
+   Set-NetConnectionProfile -Name "<Wi-Fi name>" -NetworkCategory Private
+   New-NetFirewallRule -DisplayName "Stock Tracker 8000" -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow -Profile Private
+   ```
+
+3. Start the server with `run-lan.bat` instead of `run.bat`. It prints the
+   address to open on the phone, such as `http://192.168.1.171:8000`.
+4. Log in on the phone, then use **Share → Add to Home Screen** (iPhone) or
+   **⋮ → Add to Home screen** (Android). It opens full screen like an app.
+
+The laptop stays logged in without a password. The phone login lasts 30 days.
+Running `set-password.bat` again signs out every device. The laptop must be on.
+There is no offline mode.
+
 ## How to use it
 
 1. **Hotlist & pick** — type three Yahoo symbols into the slots. Just type;
